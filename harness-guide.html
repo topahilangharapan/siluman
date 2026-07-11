@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The human-writing harness, explained</title>
+<style>
+  :root {
+    --paper: #fdfdfb;
+    --paper-edge: #f1f0ec;
+    --ink: #1c1b18;
+    --ink-soft: #56534c;
+    --rule: #dedcd5;
+    --red-pencil: #c3272b;
+    --red-wash: #fbf0ef;
+    --blue-pencil: #2b5ea7;
+    --blue-wash: #eef3fa;
+    --green-ok: #2e6b3f;
+    --green-wash: #eef5ef;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  body {
+    background: var(--paper-edge);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.58;
+  }
+  .sheet {
+    max-width: 880px;
+    margin: 0 auto;
+    background: var(--paper);
+    border-left: 1px solid var(--rule);
+    border-right: 1px solid var(--rule);
+    padding: 0 0 5rem;
+  }
+  header {
+    padding: 3.2rem 3rem 1.8rem;
+    border-bottom: 2px solid var(--ink);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 0.9rem;
+  }
+  h1 {
+    font-size: clamp(1.7rem, 4vw, 2.4rem);
+    font-weight: 600;
+    line-height: 1.15;
+    max-width: 24ch;
+  }
+  .lede {
+    margin-top: 1rem;
+    max-width: 62ch;
+    color: var(--ink-soft);
+    font-size: 1.02rem;
+  }
+  main { padding: 0 3rem; }
+  section { padding: 2.2rem 0 0.6rem; border-bottom: 1px solid var(--rule); }
+  section:last-of-type { border-bottom: none; }
+  h2 {
+    font-size: 1.3rem;
+    font-weight: 600;
+    margin-bottom: 0.9rem;
+  }
+  h3 { font-size: 1.02rem; font-weight: 600; margin: 1.3rem 0 0.4rem; }
+  p { max-width: 66ch; margin-bottom: 0.85rem; }
+  ul, ol { max-width: 64ch; padding-left: 1.3rem; margin-bottom: 0.9rem; }
+  li { margin-bottom: 0.3rem; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.82em;
+    background: var(--paper-edge);
+    padding: 0.08em 0.35em;
+    border-radius: 2px;
+  }
+  pre {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    background: #232220;
+    color: #e8e6e0;
+    padding: 1rem 1.2rem;
+    border-radius: 3px;
+    overflow-x: auto;
+    margin: 0.9rem 0 1.1rem;
+    max-width: 100%;
+  }
+  pre .c { color: #8f8c84; }
+  table {
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    margin: 0.6rem 0 1.2rem;
+    width: 100%;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.45rem 0.8rem 0.45rem 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    font-weight: 500;
+  }
+  td code { white-space: nowrap; }
+
+  /* pipeline */
+  .pipeline { margin: 1.4rem 0 1.6rem; max-width: 560px; }
+  .pnode {
+    border: 1px solid var(--ink);
+    border-radius: 3px;
+    padding: 0.7rem 1rem;
+    background: var(--paper);
+    font-size: 0.92rem;
+  }
+  .pnode .tag {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    display: block;
+    margin-bottom: 0.15rem;
+  }
+  .pnode.tier { border-left: 4px solid var(--red-pencil); }
+  .pnode.ok { border-left: 4px solid var(--green-ok); }
+  .parrow {
+    width: 1px;
+    height: 1.35rem;
+    background: var(--ink);
+    margin-left: 2rem;
+    position: relative;
+  }
+  .parrow::after {
+    content: "";
+    position: absolute;
+    bottom: 0; left: -3.5px;
+    border: 4px solid transparent;
+    border-top: 5px solid var(--ink);
+  }
+  .parrow .lbl {
+    position: absolute;
+    left: 0.7rem; top: 0;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    color: var(--ink-soft);
+    white-space: nowrap;
+    line-height: 1.35rem;
+  }
+  .pbranch { display: flex; gap: 1rem; align-items: stretch; }
+  .pbranch .pnode { flex: 1; }
+
+  .callout {
+    border-left: 3px solid var(--blue-pencil);
+    background: var(--blue-wash);
+    padding: 0.8rem 1.1rem;
+    margin: 1rem 0 1.2rem;
+    font-size: 0.92rem;
+    max-width: 62ch;
+  }
+  .callout.red { border-left-color: var(--red-pencil); background: var(--red-wash); }
+
+  /* playground */
+  .playground {
+    border: 2px solid var(--ink);
+    border-radius: 4px;
+    padding: 1.4rem 1.5rem 1.5rem;
+    margin: 1.2rem 0 1.5rem;
+    background: var(--paper);
+  }
+  .playground textarea {
+    width: 100%;
+    min-height: 130px;
+    font-family: var(--serif);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--paper);
+    color: var(--ink);
+    resize: vertical;
+  }
+  .playground textarea:focus-visible,
+  .playground button:focus-visible {
+    outline: 2px solid var(--blue-pencil);
+    outline-offset: 2px;
+  }
+  .pg-row { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.7rem; align-items: center; }
+  .pg-row button {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    padding: 0.5rem 1rem;
+    border-radius: 2px;
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+    cursor: pointer;
+  }
+  .pg-row button.ghost { background: transparent; color: var(--ink); }
+  .verdict {
+    margin-top: 1rem;
+    font-size: 0.9rem;
+  }
+  .verdict .stamp {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    padding: 0.3rem 0.8rem;
+    border-radius: 2px;
+    margin-bottom: 0.7rem;
+  }
+  .stamp.block { background: var(--red-wash); color: var(--red-pencil); border: 1px solid var(--red-pencil); }
+  .stamp.pass { background: var(--green-wash); color: var(--green-ok); border: 1px solid var(--green-ok); }
+  .verdict ul { margin-top: 0.2rem; }
+  .verdict li { font-size: 0.88rem; margin-bottom: 0.4rem; }
+  .verdict li .tiertag {
+    font-family: var(--mono);
+    font-size: 0.64rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--paper);
+    background: var(--red-pencil);
+    padding: 0.1rem 0.4rem;
+    border-radius: 2px;
+    margin-right: 0.45rem;
+  }
+  .verdict li.t2 .tiertag { background: var(--blue-pencil); }
+  .verdict .meta {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--ink-soft);
+    margin-top: 0.6rem;
+  }
+  .note { font-size: 0.85rem; font-style: italic; color: var(--ink-soft); max-width: 62ch; }
+
+  @media (max-width: 700px) {
+    header, main { padding-left: 1.2rem; padding-right: 1.2rem; }
+    .pbranch { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<header>
+  <div class="eyebrow">Claude Code harness · reference · built 11 July 2026</div>
+  <h1>The human-writing harness, explained</h1>
+  <p class="lede">Every writing request you make goes through this machinery. It injects your
+  writing rules next to the prompt, then checks the finished reply three different ways, and
+  rejects it until it reads like a person wrote it. Nothing here depends on the model choosing
+  to comply: the checks are scripts and statistics.</p>
+</header>
+
+<main>
+
+<section id="pipeline">
+  <h2>What happens on a writing turn</h2>
+  <div class="pipeline">
+    <div class="pnode"><span class="tag">you</span>"Write an email to my supervisor about the delay"</div>
+    <div class="parrow"><span class="lbl">UserPromptSubmit hook</span></div>
+    <div class="pnode"><span class="tag">gate</span>writing-preset-inject matches writing verbs and prose nouns
+      (English and Indonesian, or the #hw override), skips code requests</div>
+    <div class="parrow"><span class="lbl">match: inject rules + arm flag file</span></div>
+    <div class="pnode"><span class="tag">generation</span>Claude writes the reply with the compact preset and
+      your personal overrides sitting right next to the prompt</div>
+    <div class="parrow"><span class="lbl">Stop hook: writing-preset-lint</span></div>
+    <div class="pnode tier"><span class="tag">tier 1 · regex</span>Hard bans, zero tolerance: any em dash,
+      emoji, curly quotes, bold-term bullets, horizontal rules, "Conclusion" headings</div>
+    <div class="parrow"></div>
+    <div class="pnode tier"><span class="tag">tier 2 · statistics</span>Vocabulary scored against human
+      baseline rates; clustering and sentence-rhythm checks</div>
+    <div class="parrow"></div>
+    <div class="pnode tier"><span class="tag">tier 3 · semantic judge</span>A separate small Claude model
+      reads the reply and judges intent: figurative cliches, unnamed "experts", inflated significance</div>
+    <div class="parrow"><span class="lbl">one merged verdict</span></div>
+    <div class="pbranch">
+      <div class="pnode"><span class="tag">violations found</span>Reply is discarded. Claude receives the full
+        violation list with exact quotes and must rewrite. Up to 2 retries, then it releases with a visible
+        warning.</div>
+      <div class="pnode ok"><span class="tag">clean</span>You see the reply.</div>
+    </div>
+  </div>
+  <p>Non-writing turns skip all of this. The gate disarms the flag file, no rules are injected,
+  and the linter exits before doing any work. Your coding sessions pay zero cost.</p>
+</section>
+
+<section id="tier1">
+  <h2>Tier 1: hard bans</h2>
+  <p>Only things that are wrong in any quantity live here, and they are all mechanical
+  formatting, so a regex is the right tool. Vocabulary was removed from this tier on purpose:
+  words are handled statistically in tier 2, because banning "crucial" outright is not how
+  humans write either.</p>
+  <table>
+    <tr><th>ban</th><th>why zero tolerance</th></tr>
+    <tr><td>em dash (any <code>—</code>), spaced en dash</td><td>your personal rule: none at all, ever</td></tr>
+    <tr><td>emoji</td><td>preset formatting rule</td></tr>
+    <tr><td>curly double quotes</td><td>preset wants straight quotes throughout</td></tr>
+    <tr><td><code>- **Term:** text</code> bullets</td><td>the strongest single formatting tell of machine text</td></tr>
+    <tr><td>horizontal rules, "Conclusion" headings, Title Case headings, more than 3 bold spans</td><td>preset formatting rules</td></tr>
+  </table>
+</section>
+
+<section id="tier2">
+  <h2>Tier 2: statistics instead of bans</h2>
+  <p>Your objection to v1 was right: humans do say "crucial", just not the way AI does. So each
+  tell word now carries a baseline, called lambda: the rate a careful human writer plausibly
+  uses it per 1000 words. "Delve" gets 0.02 because people nearly never write it. "Crucial"
+  gets 0.8 because people do.</p>
+  <p>When your reply comes in, the linter counts each term and asks one question: how surprising
+  is this count if a human wrote the text? That is a Poisson tail probability. Each surprise
+  converts to a z-score on the normal distribution, the z-scores combine across all terms
+  (Stouffer's method: sum divided by the square root of how many), and the reply blocks only
+  when the combined score passes 3.0, roughly a one-in-a-thousand chance for human writing.</p>
+  <div class="callout">
+    <strong>Worked example.</strong> One "crucial" in a 400-word email: expected count 0.32,
+    seeing 1 has probability 0.27, z = 0.6. Passes without comment. Two "delve" in 176 words:
+    expected count 0.0035, seeing 2 has probability near 0.000006, z = 4.4. Blocked. Same
+    machinery, no word list ban, just how far the text sits from human behavior.
+  </div>
+  <p>Two more checks run in this tier, both pure statistics:</p>
+  <ul>
+    <li><strong>Clustering.</strong> Three or more distinct tell words inside any 100-word window
+    blocks even when the whole-document rate looks fine. AI tells arrive in bunches; human use
+    of the same words is scattered.</li>
+    <li><strong>Burstiness.</strong> For text over 150 words, the linter measures how much
+    sentence lengths vary (standard deviation over mean). Human rhythm is irregular. When the
+    variation drops below 0.35, the text reads metronome-uniform and gets sent back with the
+    instruction to vary sentence lengths.</li>
+  </ul>
+  <p>Every lambda and threshold lives in <code>lint-rules.json</code>, so tuning is a data edit,
+  not a code change.</p>
+</section>
+
+<section id="tier3">
+  <h2>Tier 3: the semantic judge</h2>
+  <p>Regex cannot tell "navigate the city" from "navigate the landscape of ideas". A language
+  model can. So after the mechanical tiers, the hook shells out to a small, fast, cheap Claude
+  model (Haiku) running headlessly:</p>
+  <pre>claude -p --model claude-haiku-4-5-20251001 \
+  --settings '{"disableAllHooks":true}'  <span class="c"># no recursion into our own hooks</span> \
+  --no-session-persistence --output-format json \
+  "&lt;judge prompt with criteria + your reply's text&gt;"</pre>
+  <p>The judge answers in strict JSON with a pass verdict and quoted violations. It checks the
+  things only context can reveal: figurative cliches, significance inflation, legacy padding,
+  weasel attribution ("experts believe" with no expert named), promotional tone, analysis bolted
+  onto facts, synonym rotation, restated requests, canned politeness, triplet overuse.</p>
+  <p>From today's verification run, against a mechanically clean but AI-flavored paragraph, it
+  returned all five planted violations with exact quotes, including catching "metropolis / urban
+  hub / city" as synonym rotation for the same referent. The full round trip took about 12
+  seconds and two cents.</p>
+  <div class="callout">
+    <strong>Fail-open by design.</strong> If the judge times out, errors, or returns something
+    unparseable, tiers 1 and 2 stand alone and you get a visible note that the judge was
+    skipped. A network problem can never trap your session behind an unreachable check.
+  </div>
+</section>
+
+<section id="loop">
+  <h2>The rewrite loop</h2>
+  <ol>
+    <li>All three tiers run and their findings merge into one list, so a single rewrite fixes
+    everything at once instead of ping-ponging through separate blocks.</li>
+    <li>On violations, the hook returns a block decision. The reply you would have seen is
+    discarded, and Claude receives the list with exact quotes: which em dash, which word at what
+    multiple of the human rate, which sentence the judge flagged and why.</li>
+    <li>Claude rewrites. The new text goes through all three tiers again, fresh.</li>
+    <li>A counter in the session flag file caps this at 2 rewrites. If violations somehow
+    survive both, the turn releases anyway and prints a warning listing what remains, so
+    enforcement fails loudly rather than looping forever or failing silently.</li>
+  </ol>
+</section>
+
+<section id="files">
+  <h2>Where everything lives</h2>
+  <table>
+    <tr><th>path</th><th>role</th></tr>
+    <tr><td><code>~/.claude/hooks/writing-preset-inject</code></td><td>UserPromptSubmit gate: detect writing intent, inject rules, arm the flag</td></tr>
+    <tr><td><code>~/.claude/hooks/writing-preset-lint</code></td><td>Stop hook: the three-tier linter described above</td></tr>
+    <tr><td><code>~/.claude/writing/human-writing-preset-compact.md</code></td><td>the rules injected on every writing turn</td></tr>
+    <tr><td><code>~/.claude/writing/human-writing-preset.md</code></td><td>full 7-section preset, reference copy</td></tr>
+    <tr><td><code>~/.claude/writing/user-overrides.md</code></td><td>your personal rules (zero em dashes; frequency not bans); appended after the preset, survives refreshes</td></tr>
+    <tr><td><code>~/.claude/writing/lint-rules.json</code></td><td>all enforcement data: hard bans, lambdas, thresholds, judge config</td></tr>
+    <tr><td><code>~/.claude/writing/.active-&lt;session&gt;</code></td><td>flag file arming the linter for one writing turn; holds the retry counter</td></tr>
+    <tr><td><code>~/.claude/skills/human-writing-preset-refresh/</code></td><td>skill that re-syncs preset and lambdas from Wikipedia's "Signs of AI writing"</td></tr>
+    <tr><td><code>~/.claude/settings.json</code></td><td>registers both hooks (inject 5s timeout, lint 60s)</td></tr>
+    <tr><td><code>~/Documents/Code/claude-harness</code></td><td>git snapshot of all of the above, plus this page</td></tr>
+  </table>
+</section>
+
+<section id="maintain">
+  <h2>Operating notes</h2>
+  <ul>
+    <li>Force enforcement on any prompt by including <code>#hw</code>.</li>
+    <li>Say "refresh the writing preset" every 2 or 3 months: the skill re-reads Wikipedia's
+    signs-of-AI-writing page, updates the preset and the lambda list, and never touches your
+    em-dash rule or overrides file.</li>
+    <li>Tune sensitivity in <code>lint-rules.json</code>: raise a word's lambda if it keeps
+    flagging your natural vocabulary, raise <code>composite_z_threshold</code> to loosen the
+    whole tier, set <code>semantic_judge.enabled</code> to false to skip the judge and its
+    2-cent, 12-second cost.</li>
+    <li>Writing turns take roughly 12 extra seconds when the judge is on. Coding turns are
+    untouched.</li>
+  </ul>
+</section>
+
+<section id="playground">
+  <h2>Try the linter</h2>
+  <p>This runs the actual tier 1 and tier 2 math in your browser: same regexes, same lambdas,
+  same Poisson and z-score arithmetic as the hook. Paste anything, or load a sample.</p>
+  <div class="playground">
+    <textarea id="pgInput" placeholder="Paste text here and run the linter on it..."></textarea>
+    <div class="pg-row">
+      <button id="pgRun">Run tiers 1 and 2</button>
+      <button class="ghost" id="pgAI">Load AI-flavored sample</button>
+      <button class="ghost" id="pgHuman">Load human-flavored sample</button>
+    </div>
+    <div class="verdict" id="pgVerdict"></div>
+  </div>
+  <p class="note">Tier 3 needs a live model call, so it is not simulated here. If a text passes
+  below but still smells like a press release, that is exactly the gap the judge covers.</p>
+</section>
+
+</main>
+</div>
+
+<script>
+const TELL_WORDS = [
+  {term:"delve", lambda:0.02, variants:["delve","delves","delving","delved"]},
+  {term:"tapestry", lambda:0.02},
+  {term:"testament to", lambda:0.02},
+  {term:"it's worth noting", lambda:0.03, variants:["it's worth noting","it is worth noting"]},
+  {term:"it's important to note", lambda:0.03, variants:["it's important to note","it is important to note"]},
+  {term:"in conclusion", lambda:0.05},
+  {term:"in today's world", lambda:0.02},
+  {term:"in the digital age", lambda:0.02},
+  {term:"plays a significant role", lambda:0.03},
+  {term:"stands as", lambda:0.05},
+  {term:"leaves a lasting impact", lambda:0.02},
+  {term:"lasting legacy", lambda:0.05},
+  {term:"nestled in the heart of", lambda:0.01},
+  {term:"rich cultural heritage", lambda:0.02},
+  {term:"ever-evolving", lambda:0.02, variants:["ever-evolving","ever-changing","rapidly evolving"]},
+  {term:"multifaceted", lambda:0.03},
+  {term:"synergy", lambda:0.05},
+  {term:"game-changing", lambda:0.03},
+  {term:"groundbreaking", lambda:0.05},
+  {term:"seamless", lambda:0.1, variants:["seamless","seamlessly"]},
+  {term:"pivotal", lambda:0.1},
+  {term:"meticulous", lambda:0.1, variants:["meticulous","meticulously"]},
+  {term:"showcase", lambda:0.1, variants:["showcase","showcases","showcasing","showcased"]},
+  {term:"garner", lambda:0.1, variants:["garner","garnered","garners"]},
+  {term:"bolster", lambda:0.1, variants:["bolster","bolstered","bolsters"]},
+  {term:"underscore", lambda:0.1, variants:["underscores","underscoring","underscored"]},
+  {term:"foster", lambda:0.15, variants:["foster","fostering","fosters"]},
+  {term:"serves as", lambda:0.15},
+  {term:"boasts", lambda:0.1, variants:["boasts","boasting"]},
+  {term:"unleash", lambda:0.1, variants:["unleash","unleashed"]},
+  {term:"embark", lambda:0.1, variants:["embark","embarked","embarking"]},
+  {term:"transformative", lambda:0.1},
+  {term:"revolutionize", lambda:0.1, variants:["revolutionize","revolutionized","revolutionizing"]},
+  {term:"cutting-edge", lambda:0.1},
+  {term:"state-of-the-art", lambda:0.1},
+  {term:"paramount", lambda:0.1},
+  {term:"profound", lambda:0.2, variants:["profound","profoundly"]},
+  {term:"intricate", lambda:0.15, variants:["intricate","intricacies"]},
+  {term:"interplay", lambda:0.1},
+  {term:"vibrant", lambda:0.15},
+  {term:"bustling", lambda:0.1},
+  {term:"streamline", lambda:0.15, variants:["streamline","streamlined","streamlining"]},
+  {term:"rich history", lambda:0.1},
+  {term:"utilize", lambda:0.2, variants:["utilize","utilizes","utilizing","utilized"]},
+  {term:"furthermore", lambda:0.3},
+  {term:"prior to", lambda:0.4},
+  {term:"in order to", lambda:0.8},
+  {term:"a wide range of", lambda:0.3},
+  {term:"experts believe", lambda:0.05},
+  {term:"critics argue", lambda:0.05},
+  {term:"widely regarded as", lambda:0.08},
+  {term:"enduring", lambda:0.3},
+  {term:"crucial", lambda:0.8},
+  {term:"robust", lambda:0.6},
+  {term:"enhance", lambda:0.6, variants:["enhance","enhances","enhancing"]},
+  {term:"leverage", lambda:0.4, variants:["leverage","leverages","leveraging"]},
+  {term:"elevate", lambda:0.3, variants:["elevate","elevates","elevating"]},
+  {term:"unlock", lambda:0.4, variants:["unlock","unlocks","unlocking"]},
+  {term:"comprehensive", lambda:0.8}
+];
+const TELL_PATTERNS = [
+  {name:"trailing -ing significance clause", lambda:0.15,
+   rx:/,\s+(?:highlighting|underscoring|showcasing|reflecting|emphasizing|cementing|demonstrating|signaling|signalling|illustrating|solidifying|reinforcing|underlining)\b[^.\n]*\./gi},
+  {name:"negative parallelism (not just X, but Y)", lambda:0.15,
+   rx:/\bnot\s+(?:just|only|merely)\b[^.\n]{0,80}?\bbut\b/gi},
+  {name:"negative parallelism (no X, no Y, just Z)", lambda:0.05,
+   rx:/\bno\s+\w+,\s*no\s+\w+[,-]\s*just\b/gi}
+];
+const HARD_BANS = [
+  {name:"em dash (zero tolerance)", rx:/—/},
+  {name:"spaced en dash used as em dash", rx:/ – /},
+  {name:"bullet with bold header", rx:/^\s*[-*]\s+\*\*[^*\n]+?(?::\s*\*\*|\*\*\s*[:—-])/m},
+  {name:"horizontal rule", rx:/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/m},
+  {name:"Conclusion heading", rx:/^#{1,6}\s*conclusion\b/mi},
+  {name:"curly double quotes", rx:/[“”]/},
+  {name:"emoji", rx:/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/u}
+];
+const STATS = {zThreshold:3.0, zCap:8.0, clusterWindow:100, clusterNeed:3,
+               burstMinWords:150, burstMinSent:5, burstMinCV:0.35};
+
+function poissonTail(k, mu) {
+  if (k <= 0) return 1.0;
+  let cdf = 0, term = Math.exp(-mu);
+  for (let i = 0; i < k; i++) { cdf += term; term *= mu / (i + 1); }
+  return Math.max(1e-15, 1 - Math.min(cdf, 1));
+}
+/* Acklam's inverse normal CDF approximation */
+function invNorm(p) {
+  const a=[-39.6968302866538,220.946098424521,-275.928510446969,138.357751867269,-30.6647980661472,2.50662827745924];
+  const b=[-54.4760987982241,161.585836858041,-155.698979859887,66.8013118877197,-13.2806815528857];
+  const c=[-0.00778489400243029,-0.322396458041136,-2.40075827716184,-2.54973253934373,4.37466414146497,2.93816398269878];
+  const d=[0.00778469570904146,0.32246712907004,2.445134137143,3.75440866190742];
+  const pl=0.02425;
+  let q, r;
+  if (p < pl) { q = Math.sqrt(-2*Math.log(p));
+    return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1); }
+  if (p <= 1-pl) { q = p-0.5; r = q*q;
+    return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q/(((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1); }
+  q = Math.sqrt(-2*Math.log(1-p));
+  return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);
+}
+function stripCode(t) { return t.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]+`/g, " "); }
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+
+function lint(text) {
+  const plain = stripCode(text);
+  const v1 = [], v2 = [];
+
+  for (const ban of HARD_BANS) {
+    const m = plain.match(ban.rx);
+    if (m) {
+      const idx = plain.search(ban.rx);
+      const ctx = plain.slice(Math.max(0, idx-20), idx+m[0].length+20).replace(/\n/g," ");
+      v1.push(`${ban.name} at "...${ctx}..."`);
+    }
+  }
+  const bold = (plain.match(/\*\*[^*\n]+\*\*/g)||[]).length;
+  if (bold > 3) v1.push(`bold-heavy output: ${bold} bold spans (max 3)`);
+
+  const words = plain.match(/[A-Za-z']+/g) || [];
+  const n = words.length;
+  if (n >= 20) {
+    const zs = [], details = [], hits = [];
+    const wordStarts = [];
+    { const re=/[A-Za-z']+/g; let m2; while ((m2=re.exec(plain))) wordStarts.push(m2.index); }
+
+    for (const e of TELL_WORDS) {
+      const variants = e.variants || [e.term];
+      const alts = variants.map(v => v.replace(/[.*+?^${}()|[\]\\]/g,"\\$&").replace(/ /g,"\\s+")).join("|");
+      const rx = new RegExp(`\\b(?:${alts})\\b`, "gi");
+      const matches = [...plain.matchAll(rx)];
+      const k = matches.length;
+      if (!k) continue;
+      const mu = e.lambda * n / 1000;
+      const p = poissonTail(k, mu);
+      const z = p < 0.5 ? Math.min(invNorm(1-p), STATS.zCap) : 0;
+      zs.push(z);
+      if (z > 0.8) details.push(`"${e.term}" x${k} in ${n} words (~${Math.round(k/Math.max(mu,1e-9))}x human rate, z=${z.toFixed(1)})`);
+      const positions = matches.map(m3 => {
+        let wi = 0; for (const s of wordStarts) { if (s <= m3.index) wi++; else break; }
+        return Math.max(wi-1, 0);
+      });
+      hits.push({term: e.term, positions});
+    }
+    for (const pat of TELL_PATTERNS) {
+      const k = [...plain.matchAll(pat.rx)].length;
+      if (!k) continue;
+      const mu = pat.lambda * n / 1000;
+      const p = poissonTail(k, mu);
+      const z = p < 0.5 ? Math.min(invNorm(1-p), STATS.zCap) : 0;
+      zs.push(z);
+      if (z > 0.8) details.push(`${pat.name} x${k} (z=${z.toFixed(1)})`);
+    }
+    if (zs.length) {
+      const composite = zs.reduce((a,b)=>a+b,0) / Math.sqrt(zs.length);
+      if (composite > STATS.zThreshold)
+        v2.push(`AI-typical vocabulary pattern (composite z=${composite.toFixed(1)} > ${STATS.zThreshold}): ${details.slice(0,6).join("; ")}`);
+      else if (details.length)
+        v2._info = `vocabulary noted but within human range (composite z=${composite.toFixed(1)}): ${details.slice(0,4).join("; ")}`;
+    }
+    const flat = hits.flatMap(h => h.positions.map(p2 => [p2, h.term])).sort((a,b)=>a[0]-b[0]);
+    for (let i = 0; i < flat.length; i++) {
+      const inWin = new Set(flat.filter(([p2]) => p2 >= flat[i][0] && p2 < flat[i][0]+STATS.clusterWindow).map(([,t])=>t));
+      if (inWin.size >= STATS.clusterNeed) {
+        v2.push(`tell-word cluster: ${inWin.size} distinct AI-flavored terms (${[...inWin].sort().join(", ")}) within ${STATS.clusterWindow} words`);
+        break;
+      }
+    }
+    if (n >= STATS.burstMinWords) {
+      const sents = plain.split(/[.!?]+(?:\s+|$)/).filter(s => s.split(/\s+/).filter(Boolean).length >= 2);
+      if (sents.length >= STATS.burstMinSent) {
+        const lens = sents.map(s => s.split(/\s+/).filter(Boolean).length);
+        const mean = lens.reduce((a,b)=>a+b,0)/lens.length;
+        const sd = Math.sqrt(lens.reduce((a,b)=>a+(b-mean)**2,0)/(lens.length-1));
+        const cv = mean > 0 ? sd/mean : 1;
+        if (cv < STATS.burstMinCV)
+          v2.push(`sentence rhythm too regular (length variation ${cv.toFixed(2)}, human floor ${STATS.burstMinCV}): vary your sentence lengths`);
+      }
+    }
+  }
+  return {v1, v2, info: v2._info, words: n};
+}
+
+const SAMPLE_AI = "In today's world, our platform stands as a testament to seamless innovation. It delivers a robust, pivotal, and crucial experience for every user. We delve into your workflow to unlock transformative results, highlighting our commitment to excellence. The interface is intuitive. The dashboard is powerful. The reports are clear. The exports are fast. It's not just a tool, but a partner on your journey.";
+const SAMPLE_HUMAN = "The meeting moved to Thursday because half the team is out with the flu. Nothing else changes: same agenda, same room, and Dina still presents the budget first. If you have slides, send them to her by Wednesday afternoon so she can merge the deck. Lunch will be ordered in. Last time the sandwiches ran out early, so reply to this email if you want one held for you, and tell me which kind. The quarterly numbers look better than March, mostly because the Jakarta office closed two deals late in the month. We will go through the details Thursday.";
+
+document.getElementById("pgAI").addEventListener("click", () => {
+  document.getElementById("pgInput").value = SAMPLE_AI; run();
+});
+document.getElementById("pgHuman").addEventListener("click", () => {
+  document.getElementById("pgInput").value = SAMPLE_HUMAN; run();
+});
+document.getElementById("pgRun").addEventListener("click", run);
+
+function run() {
+  const text = document.getElementById("pgInput").value;
+  const out = document.getElementById("pgVerdict");
+  if (!text.trim()) { out.innerHTML = '<p class="note">Nothing to lint yet.</p>'; return; }
+  const r = lint(text);
+  const items = [
+    ...r.v1.map(v => `<li class="t1"><span class="tiertag">tier 1</span>${esc(v)}</li>`),
+    ...r.v2.map(v => `<li class="t2"><span class="tiertag">tier 2</span>${esc(v)}</li>`)
+  ];
+  const blocked = items.length > 0;
+  out.innerHTML =
+    `<span class="stamp ${blocked ? "block" : "pass"}">${blocked ? "BLOCK: rewrite required" : "PASS on tiers 1 and 2"}</span>` +
+    (items.length ? `<ul>${items.join("")}</ul>` : "") +
+    (!blocked && r.info ? `<p class="note">${esc(r.info)}</p>` : "") +
+    `<div class="meta">${r.words} words scanned · thresholds: composite z > ${STATS.zThreshold}, cluster ${STATS.clusterNeed} terms / ${STATS.clusterWindow} words, rhythm floor ${STATS.burstMinCV}</div>`;
+}
+</script>
+</body>
+</html>
