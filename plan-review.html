@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan review — human-writing preset harness</title>
+<style>
+  :root {
+    --paper: #fdfdfb;
+    --paper-edge: #f1f0ec;
+    --ink: #1c1b18;
+    --ink-soft: #56534c;
+    --rule: #dedcd5;
+    --red-pencil: #c3272b;
+    --red-wash: #fbf0ef;
+    --blue-pencil: #2b5ea7;
+    --blue-wash: #eef3fa;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; }
+  }
+  body {
+    background: var(--paper-edge);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.55;
+  }
+  .sheet {
+    max-width: 1060px;
+    margin: 0 auto;
+    background: var(--paper);
+    min-height: 100vh;
+    border-left: 1px solid var(--rule);
+    border-right: 1px solid var(--rule);
+    padding: 0 0 6rem;
+  }
+
+  header {
+    padding: 3.2rem 3rem 1.6rem;
+    border-bottom: 2px solid var(--ink);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 0.9rem;
+  }
+  h1 {
+    font-size: clamp(1.7rem, 4vw, 2.5rem);
+    font-weight: 600;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    max-width: 21ch;
+  }
+  .ledger {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.6rem;
+    align-items: baseline;
+    margin-top: 1.4rem;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+  }
+  .ledger strong { color: var(--ink); font-weight: 600; }
+  .ledger .approved-count strong { color: var(--blue-pencil); }
+  .ledger .flagged-count strong { color: var(--red-pencil); }
+
+  .legend {
+    padding: 1.1rem 3rem;
+    border-bottom: 1px solid var(--rule);
+    font-size: 0.86rem;
+    color: var(--ink-soft);
+    font-style: italic;
+  }
+  .legend .blue { color: var(--blue-pencil); font-style: normal; }
+  .legend .red { color: var(--red-pencil); font-style: normal; }
+
+  main { padding-top: 1rem; }
+
+  section.block {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 0 2.2rem;
+    padding: 2.1rem 3rem 2.3rem;
+    border-bottom: 1px solid var(--rule);
+    position: relative;
+  }
+  section.block[data-status="approved"] { border-left: 3px solid var(--blue-pencil); }
+  section.block[data-status="flagged"]  { border-left: 3px solid var(--red-pencil); }
+  section.block[data-status="pending"]  { border-left: 3px solid transparent; }
+
+  .body-col { max-width: 62ch; }
+  .marker {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin-bottom: 0.45rem;
+  }
+  h2 {
+    font-size: 1.28rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    line-height: 1.25;
+  }
+  .body-col p { margin-bottom: 0.8rem; }
+  .body-col p:last-child { margin-bottom: 0; }
+  .body-col ul { padding-left: 1.2rem; margin-bottom: 0.8rem; }
+  .body-col li { margin-bottom: 0.35rem; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.82em;
+    background: var(--paper-edge);
+    padding: 0.08em 0.35em;
+    border-radius: 2px;
+  }
+
+  /* margin rail */
+  .margin-col { padding-top: 1.9rem; }
+  .status-row { display: flex; gap: 0.5rem; margin-bottom: 0.9rem; }
+  .status-row button {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    padding: 0.38rem 0.7rem;
+    background: transparent;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    color: var(--ink-soft);
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .status-row button:hover { border-color: var(--ink-soft); }
+  .status-row button:focus-visible,
+  .note-tools button:focus-visible,
+  textarea:focus-visible,
+  .export-bar button:focus-visible {
+    outline: 2px solid var(--blue-pencil);
+    outline-offset: 2px;
+  }
+  .status-row button.on-approve {
+    background: var(--blue-wash);
+    border-color: var(--blue-pencil);
+    color: var(--blue-pencil);
+  }
+  .status-row button.on-flag {
+    background: var(--red-wash);
+    border-color: var(--red-pencil);
+    color: var(--red-pencil);
+  }
+
+  .note {
+    border-left: 2px solid var(--red-pencil);
+    padding: 0.45rem 0 0.45rem 0.8rem;
+    margin-bottom: 0.7rem;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    color: var(--ink);
+    font-style: italic;
+  }
+  .note .note-meta {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-style: normal;
+    font-size: 0.66rem;
+    color: var(--ink-soft);
+    margin-top: 0.35rem;
+  }
+  .note .note-meta button {
+    background: none; border: none; cursor: pointer;
+    font-family: var(--mono); font-size: 0.66rem;
+    color: var(--ink-soft); padding: 0;
+    text-decoration: underline;
+  }
+  .note .note-meta button:hover { color: var(--red-pencil); }
+
+  .note-tools textarea {
+    width: 100%;
+    min-height: 74px;
+    font-family: var(--serif);
+    font-size: 0.9rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--paper);
+    color: var(--ink);
+    resize: vertical;
+    display: none;
+  }
+  .note-tools textarea.open { display: block; margin-bottom: 0.45rem; }
+  .note-tools .add-note {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    background: none;
+    border: none;
+    color: var(--ink-soft);
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .note-tools .add-note:hover { color: var(--red-pencil); }
+
+  /* extra points */
+  .extra {
+    padding: 2.1rem 3rem 2.3rem;
+    border-bottom: 2px solid var(--ink);
+  }
+  .extra h2 { margin-bottom: 0.4rem; }
+  .extra .hint { color: var(--ink-soft); font-size: 0.92rem; font-style: italic; margin-bottom: 1rem; max-width: 58ch; }
+  .extra textarea {
+    width: 100%;
+    max-width: 62ch;
+    min-height: 84px;
+    font-family: var(--serif);
+    font-size: 0.95rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    background: var(--paper);
+    color: var(--ink);
+    resize: vertical;
+  }
+  .extra .note { max-width: 62ch; }
+  .extra .save-extra {
+    display: block;
+    margin-top: 0.5rem;
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    padding: 0.45rem 0.9rem;
+    background: var(--ink);
+    color: var(--paper);
+    border: none;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+
+  .export-bar {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    gap: 0.7rem;
+    align-items: center;
+    padding: 0.85rem 3rem;
+    background: var(--paper);
+    border-top: 1px solid var(--rule);
+  }
+  .export-bar button {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    padding: 0.5rem 1rem;
+    border-radius: 2px;
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+    cursor: pointer;
+  }
+  .export-bar button.ghost { background: transparent; color: var(--ink); }
+  .export-bar .toast {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--blue-pencil);
+    opacity: 0;
+    transition: opacity 200ms ease;
+  }
+  .export-bar .toast.show { opacity: 1; }
+
+  @media (max-width: 900px) {
+    section.block { grid-template-columns: 1fr; }
+    .margin-col { padding-top: 0.4rem; }
+    header, .legend, section.block, .extra, .export-bar { padding-left: 1.2rem; padding-right: 1.2rem; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<header>
+  <div class="eyebrow">Claude Code harness · plan under review</div>
+  <h1>Hardcode the human-writing preset into the harness</h1>
+  <div class="ledger" id="ledger"></div>
+</header>
+
+<div class="legend">
+  Mark each section with the editor's pencils: <span class="blue">blue approves</span>,
+  <span class="red">red flags it for change</span>. Notes you attach appear in the margin
+  and travel with the export.
+</div>
+
+<main id="plan"></main>
+
+<section class="extra" id="extraSection">
+  <h2>Points not in the plan</h2>
+  <p class="hint">If you want to suggest something the plan doesn't cover — a new rule, a different
+  mechanism, anything — write it here. These are exported alongside the section notes.</p>
+  <div id="extraNotes"></div>
+  <textarea id="extraInput" placeholder="Suggest a new point…"></textarea>
+  <button class="save-extra" id="saveExtra">Add point</button>
+</section>
+
+<div class="export-bar">
+  <button id="copyBtn">Copy feedback as markdown</button>
+  <button class="ghost" id="downloadBtn">Download .md</button>
+  <button class="ghost" id="resetBtn">Clear all marks</button>
+  <span class="toast" id="toast"></span>
+</div>
+
+</div>
+
+<script>
+const SECTIONS = [
+  {
+    id: "context",
+    marker: "Context",
+    title: "Why this exists, and the design principle",
+    html: `<p>The human-writing preset (anti-AI-tells rules derived from Wikipedia's
+    <em>Signs of AI writing</em>) must govern every writing request — enforced by the harness,
+    not by instructions the model can drift past. The principle:
+    <em>inject deterministically, then verify deterministically.</em></p>
+    <p>Two hooks do this. A <code>UserPromptSubmit</code> hook detects writing-intent prompts and
+    injects the compact preset right next to the prompt, where salience is highest. A
+    <code>Stop</code> hook then lints Claude's finished reply with a script — banned words,
+    banned sentence skeletons, formatting tells — and blocks the reply, forcing a rewrite,
+    when it fails. The linter is the hardcoded part: a script cannot be talked out of its regexes.</p>`
+  },
+  {
+    id: "canonical",
+    marker: "§ 1",
+    title: "Canonical preset location — ~/.claude/writing/",
+    html: `<p>Copy <code>human-writing-preset.md</code> (full, ~2.5k tokens) and
+    <code>human-writing-preset-compact.md</code> (~600 tokens) out of Downloads into
+    <code>~/.claude/writing/</code>. The hooks read these files at runtime, so a future preset
+    refresh updates what gets injected without touching any hook code.</p>`
+  },
+  {
+    id: "inject",
+    marker: "§ 2",
+    title: "writing-preset-inject — the UserPromptSubmit hook",
+    html: `<p>A Python script that reads the prompt from stdin and decides whether this is a
+    writing turn. The gate matches writing verbs (write, draft, compose, rewrite, rephrase,
+    polish) near prose nouns (email, essay, article, blog, letter, post, caption, bio, report,
+    proposal…), plus Indonesian equivalents (tulis, tuliskan, buatkan artikel/email/surat).
+    The token <code>#hw</code> in any prompt forces it on.</p>
+    <p>A negative guard keeps coding prompts out: "write a function/script/test/component"
+    does not trigger. On a match the hook injects the compact preset as additional context and
+    drops a per-session flag file that arms the linter for this turn. On no match it disarms.</p>`
+  },
+  {
+    id: "lint",
+    marker: "§ 3",
+    title: "writing-preset-lint — the Stop hook that blocks violations",
+    html: `<p>Runs only when the flag file says this was a writing turn. It parses the
+    transcript, takes Claude's final reply, strips code blocks, and checks: banned vocabulary
+    ("delve", "robust", "serves as", "it's worth noting"…), negative parallelisms
+    ("not just X, but Y"), trailing "-ing" significance clauses, em-dash density over one per
+    300 words, the bold-term bullet pattern, emoji, horizontal rules, Title Case headings,
+    "Conclusion" sections, curly quotes.</p>
+    <p>On violations it returns <code>{"decision": "block"}</code> with the exact offending
+    snippets, and Claude must rewrite. A retry cap of two, plus the
+    <code>stop_hook_active</code> check, prevents infinite loops; after that it releases.</p>`
+  },
+  {
+    id: "settings",
+    marker: "§ 4",
+    title: "Register both hooks in settings.json",
+    html: `<p>Add to <code>~/.claude/settings.json</code>, alongside the existing
+    codebase-memory hooks: <code>UserPromptSubmit</code> → writing-preset-inject (5s timeout)
+    and <code>Stop</code> → writing-preset-lint (10s timeout).</p>`
+  },
+  {
+    id: "skill",
+    marker: "§ 5",
+    title: "Install the refresh skill",
+    html: `<p>Unzip <code>human-writing-preset-refresh.skill</code> into
+    <code>~/.claude/skills/</code>, then point its read/write steps at
+    <code>~/.claude/writing/</code> so "refresh the writing preset" re-syncs from Wikipedia
+    and updates exactly the files the hooks inject.</p>`
+  },
+  {
+    id: "backstop",
+    marker: "§ 6",
+    title: "Two-line CLAUDE.md backstop",
+    html: `<p>A short pointer in <code>~/.claude/CLAUDE.md</code>: prose deliverables must
+    follow the compact preset. This only catches phrasings the regex gate misses; it is
+    a backstop (~40 tokens), not the mechanism.</p>`
+  },
+  {
+    id: "scope",
+    marker: "Scope",
+    title: "Decisions already made — flag if wrong",
+    html: `<p>Enforcement applies to writing-intent turns only. Coding replies, commit
+    messages, and normal Claude Code reporting stay unlinted — otherwise the linter would
+    false-positive on terse status output. <code>#hw</code> opts any turn in manually.
+    The compact preset is what gets injected each writing turn; the full preset stays in
+    <code>~/.claude/writing/</code> for reference and refresh.</p>`
+  },
+  {
+    id: "verify",
+    marker: "Verification",
+    title: "How we prove it works",
+    html: `<p>Unit-test the linter offline with fabricated transcripts — one riddled with
+    tells ("delve", "not just X, but Y", bold-term bullets, em-dash spam), one clean — and
+    assert block versus pass. Unit-test the gate with writing prompts, an Indonesian prompt,
+    a coding prompt that must not trigger, and a <code>#hw</code> override.</p>
+    <p>Then a live test in a fresh session: a writing prompt provoked into using "delve"
+    (confirm the forced rewrite), a coding prompt (confirm silence), and a temporarily
+    unsatisfiable linter to watch the retry cap release after two blocks.</p>`
+  }
+];
+
+const KEY = "plan-review-hw-preset-v1";
+let state = load();
+
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  const s = { sections: {}, extra: [] };
+  SECTIONS.forEach(sec => s.sections[sec.id] = { status: "pending", notes: [] });
+  return s;
+}
+function save() { localStorage.setItem(KEY, JSON.stringify(state)); renderLedger(); }
+
+function el(tag, cls, html) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (html !== undefined) n.innerHTML = html;
+  return n;
+}
+
+function renderLedger() {
+  const vals = Object.values(state.sections);
+  const a = vals.filter(v => v.status === "approved").length;
+  const f = vals.filter(v => v.status === "flagged").length;
+  const p = vals.length - a - f;
+  const n = vals.reduce((acc, v) => acc + v.notes.length, 0) + state.extra.length;
+  document.getElementById("ledger").innerHTML =
+    `<span>${vals.length} sections</span>` +
+    `<span class="approved-count"><strong>${a}</strong> approved</span>` +
+    `<span class="flagged-count"><strong>${f}</strong> flagged</span>` +
+    `<span><strong>${p}</strong> unmarked</span>` +
+    `<span><strong>${n}</strong> notes</span>`;
+}
+
+function renderNotes(container, notes, onDelete) {
+  container.querySelectorAll(".note").forEach(n => n.remove());
+  notes.forEach((note, i) => {
+    const d = el("div", "note");
+    d.appendChild(el("div", "", escapeHtml(note.text)));
+    const meta = el("div", "note-meta");
+    meta.appendChild(el("span", "", note.when));
+    const del = el("button", "", "remove");
+    del.addEventListener("click", () => onDelete(i));
+    meta.appendChild(del);
+    d.appendChild(meta);
+    container.appendChild(d);
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function stamp() {
+  return new Date().toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+const main = document.getElementById("plan");
+SECTIONS.forEach(sec => {
+  const s = state.sections[sec.id] || (state.sections[sec.id] = { status: "pending", notes: [] });
+  const block = el("section", "block");
+  block.dataset.status = s.status;
+  block.id = "sec-" + sec.id;
+
+  const body = el("div", "body-col");
+  body.appendChild(el("div", "marker", sec.marker));
+  body.appendChild(el("h2", "", sec.title));
+  body.insertAdjacentHTML("beforeend", sec.html);
+  block.appendChild(body);
+
+  const margin = el("div", "margin-col");
+  const row = el("div", "status-row");
+  const bA = el("button", "", "approve");
+  const bF = el("button", "", "needs change");
+  function paint() {
+    bA.className = s.status === "approved" ? "on-approve" : "";
+    bF.className = s.status === "flagged" ? "on-flag" : "";
+    block.dataset.status = s.status;
+  }
+  bA.addEventListener("click", () => { s.status = s.status === "approved" ? "pending" : "approved"; paint(); save(); });
+  bF.addEventListener("click", () => { s.status = s.status === "flagged" ? "pending" : "flagged"; paint(); save(); });
+  row.appendChild(bA); row.appendChild(bF);
+  margin.appendChild(row);
+
+  const notesWrap = el("div", "notes-wrap");
+  margin.appendChild(notesWrap);
+
+  const tools = el("div", "note-tools");
+  const ta = el("textarea");
+  ta.placeholder = "Write a margin note…";
+  const add = el("button", "add-note", "+ add note");
+  add.addEventListener("click", () => {
+    if (!ta.classList.contains("open")) { ta.classList.add("open"); ta.focus(); add.textContent = "save note"; return; }
+    const text = ta.value.trim();
+    if (text) {
+      s.notes.push({ text, when: stamp() });
+      ta.value = "";
+      redraw();
+      save();
+    }
+    ta.classList.remove("open");
+    add.textContent = "+ add note";
+  });
+  ta.addEventListener("keydown", e => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) add.click();
+  });
+  tools.appendChild(ta); tools.appendChild(add);
+  margin.appendChild(tools);
+
+  function redraw() {
+    renderNotes(notesWrap, s.notes, i => { s.notes.splice(i, 1); redraw(); save(); });
+  }
+  paint(); redraw();
+
+  block.appendChild(margin);
+  main.appendChild(block);
+});
+
+/* extra points */
+const extraNotes = document.getElementById("extraNotes");
+function redrawExtra() {
+  renderNotes(extraNotes, state.extra, i => { state.extra.splice(i, 1); redrawExtra(); save(); });
+}
+document.getElementById("saveExtra").addEventListener("click", () => {
+  const ta = document.getElementById("extraInput");
+  const text = ta.value.trim();
+  if (!text) return;
+  state.extra.push({ text, when: stamp() });
+  ta.value = "";
+  redrawExtra(); save();
+});
+redrawExtra();
+
+/* export */
+function buildMarkdown() {
+  const lines = ["# Plan review — human-writing preset harness", ""];
+  SECTIONS.forEach(sec => {
+    const s = state.sections[sec.id];
+    const mark = s.status === "approved" ? "APPROVED" : s.status === "flagged" ? "NEEDS CHANGE" : "unmarked";
+    lines.push(`## ${sec.marker} ${sec.title}`, `Status: ${mark}`);
+    s.notes.forEach(n => lines.push(`- Note (${n.when}): ${n.text}`));
+    lines.push("");
+  });
+  if (state.extra.length) {
+    lines.push("## New points suggested");
+    state.extra.forEach(n => lines.push(`- (${n.when}) ${n.text}`));
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+function flash(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+document.getElementById("copyBtn").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(buildMarkdown());
+    flash("copied — paste it back to Claude");
+  } catch (e) {
+    flash("copy failed — use download instead");
+  }
+});
+document.getElementById("downloadBtn").addEventListener("click", () => {
+  const blob = new Blob([buildMarkdown()], { type: "text/markdown" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "plan-review-feedback.md";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  flash("downloaded");
+});
+document.getElementById("resetBtn").addEventListener("click", () => {
+  if (!confirm("Clear every mark and note?")) return;
+  localStorage.removeItem(KEY);
+  state = load();
+  location.reload();
+});
+
+renderLedger();
+</script>
+</body>
+</html>
