@@ -67,6 +67,11 @@ def main() -> None:
         preset = COMPACT_PRESET.read_text(encoding="utf-8")
     except OSError:
         return
+    overrides = WRITING_DIR / "user-overrides.md"
+    try:
+        preset += "\n\n" + overrides.read_text(encoding="utf-8")
+    except OSError:
+        pass
 
     try:
         flag.write_text("0", encoding="utf-8")

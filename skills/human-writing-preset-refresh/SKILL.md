@@ -70,13 +70,18 @@ The preset ships in two forms plus a machine-readable rules file, and all three 
 - `human-writing-preset.md` — the full version (7 sections + self-check list).
 - `human-writing-preset-compact.md` — the condensed version for character-limited instruction
   fields. Keep it under ~2,500 characters of rules; cut the least impactful items first.
-- `lint-rules.json` — the Stop-hook linter's rules. Regenerate `banned_phrases` from the updated
-  banned-vocabulary section (only unambiguous words/phrases — skip terms that are banned only in
-  their figurative sense, like "landscape" or "journey", since a regex cannot tell figurative from
-  literal). Update `banned_regexes` if new mechanical patterns appeared (new sentence skeletons,
-  new formatting tells). Validate the file parses (`python3 -c "import json; json.load(open(...))"`)
-  and test one dirty transcript through `~/.claude/hooks/writing-preset-lint` before finishing —
-  a malformed rules file silently disables enforcement.
+- `lint-rules.json` (schema v2) — the Stop-hook linter's rules. Regenerate the `tell_words` list
+  from the updated vocabulary: each entry is `{term, lambda, variants?}` where `lambda` is the
+  plausible HUMAN rate per 1000 words (0.02 for words humans almost never write like "delve" or
+  "tapestry"; 0.1–0.3 for strong tells; 0.6–1.0 for words humans genuinely use like "crucial").
+  Detection is statistical (Poisson surprise vs these baselines), so new tell words are ADDED with
+  a lambda, never as outright bans. Figurative-only tells ("landscape", "journey", "navigate")
+  go into `semantic_judge.criteria` instead — the judge can tell figurative from literal, regex
+  cannot. NEVER modify `hard_bans` (the em-dash zero-tolerance entry is a personal rule), the
+  `statistics` thresholds, or `~/.claude/writing/user-overrides.md`. Validate the file parses
+  (`python3 -c "import json; json.load(open(...))"`) and test one dirty transcript through
+  `~/.claude/hooks/writing-preset-lint` before finishing — a malformed rules file silently
+  disables enforcement.
 
 Rules for editing:
 

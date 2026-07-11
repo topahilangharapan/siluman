@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
-"""Stop hook: mechanical linter for the human-writing preset.
+"""Stop hook: three-tier linter for the human-writing preset (schema v2).
 
-Runs only when writing-preset-inject armed this session (flag file exists).
-Scans Claude's final reply for checkable violations defined in
-~/.claude/writing/lint-rules.json and blocks the stop, forcing a rewrite,
-up to max_retries times. All failures exit 0 — a broken linter must never
-trap a session."""
+Tier 1: hard bans (regex, zero tolerance) - formatting only, incl. any em dash.
+Tier 2: statistical scoring - Poisson tail probabilities of tell-word counts vs
+        human baseline rates (lambda per 1000 words), combined with Stouffer's
+        method; plus tell clustering and sentence-length burstiness.
+Tier 3: semantic judge - headless `claude -p` (Haiku) evaluates intent/context
+        criteria regexes cannot see. Fail-open on any judge failure.
+
+Runs only when writing-preset-inject armed this session. Blocks with a merged
+violation list from all tiers, capped at max_retries rewrites. All failures
+exit 0 - a broken linter must never trap a session."""
 
 import json
+import math
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+from statistics import NormalDist, mean, stdev
 
 WRITING_DIR = Path.home() / ".claude" / "writing"
 RULES_FILE = WRITING_DIR / "lint-rules.json"
+
 
 def flag_path(session_id: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id or "unknown")
     return WRITING_DIR / f".active-{safe}"
 
+
 def last_assistant_text(transcript_path: str) -> str:
-    """Concatenated text blocks of the final assistant message in the JSONL transcript."""
     text = ""
     try:
         with open(transcript_path, encoding="utf-8") as fh:
@@ -34,8 +44,7 @@ def last_assistant_text(transcript_path: str) -> str:
                     continue
                 if entry.get("type") != "assistant":
                     continue
-                msg = entry.get("message") or {}
-                content = msg.get("content")
+                content = (entry.get("message") or {}).get("content")
                 if isinstance(content, list):
                     blocks = [b.get("text", "") for b in content
                               if isinstance(b, dict) and b.get("type") == "text"]
@@ -47,9 +56,11 @@ def last_assistant_text(transcript_path: str) -> str:
         pass
     return text
 
+
 def strip_code(text: str) -> str:
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     return re.sub(r"`[^`\n]+`", " ", text)
+
 
 def compile_pattern(raw: str):
     flags = 0
@@ -60,54 +71,218 @@ def compile_pattern(raw: str):
         raw = raw[m.end():]
     return re.compile(raw, flags)
 
-def find_violations(text: str, rules: dict) -> list:
-    violations = []
-    plain = strip_code(text)
 
-    for phrase in rules.get("banned_phrases", []):
-        pat = r"\b" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b"
-        m = re.search(pat, plain, re.IGNORECASE)
-        if m:
-            violations.append(f'banned phrase "{m.group(0)}"')
+# ---------- tier 1: hard bans ----------
 
-    for rule in rules.get("banned_regexes", []):
+def tier1_violations(plain: str, rules: dict) -> list:
+    out = []
+    for rule in rules.get("hard_bans", []):
         try:
             rx = compile_pattern(rule["pattern"])
         except re.error:
             continue
         m = rx.search(plain)
         if m:
-            snippet = m.group(0)[:60].replace("\n", " ")
-            violations.append(f'{rule["name"]}: "{snippet}"')
-
-    words = max(len(plain.split()), 1)
-    dash_budget = max(1, words // rules.get("em_dash_words_per_allowed", 300))
-    dashes = plain.count("—")
-    if dashes > dash_budget:
-        violations.append(f"em-dash overuse: {dashes} in {words} words (budget {dash_budget})")
+            start = max(0, m.start() - 25)
+            ctx = plain[start:m.end() + 25].replace("\n", " ")
+            out.append(f'{rule["name"]} at "...{ctx}..."')
 
     bold_spans = len(re.findall(r"\*\*[^*\n]+\*\*", plain))
     max_bold = rules.get("max_bold_spans", 3)
     if bold_spans > max_bold:
-        violations.append(f"bold-heavy output: {bold_spans} bold spans (max {max_bold})")
+        out.append(f"bold-heavy output: {bold_spans} bold spans (max {max_bold})")
 
     for heading in re.findall(r"(?m)^#{1,6}\s+(.+)$", plain):
         hwords = [w for w in heading.split() if len(w) > 3 and w.isalpha()]
         if len(hwords) >= 3:
             caps = sum(1 for w in hwords if w[0].isupper())
             if caps / len(hwords) > 0.7:
-                violations.append(f'Title Case heading: "{heading[:50]}"')
+                out.append(f'Title Case heading: "{heading[:50]}"')
                 break
+    return out
 
-    return violations
+
+# ---------- tier 2: statistics ----------
+
+def poisson_tail(k: int, mu: float) -> float:
+    """P(X >= k) for X ~ Poisson(mu)."""
+    if k <= 0:
+        return 1.0
+    cdf = 0.0
+    logmu = math.log(mu) if mu > 0 else float("-inf")
+    for i in range(k):
+        cdf += math.exp(-mu + i * logmu - math.lgamma(i + 1)) if mu > 0 else (1.0 if i == 0 else 0.0)
+    return max(1e-15, 1.0 - min(cdf, 1.0))
+
+
+def term_regex(entry: dict):
+    variants = entry.get("variants") or [entry["term"]]
+    alts = "|".join(re.escape(v).replace(r"\ ", r"\s+") for v in variants)
+    return re.compile(rf"\b(?:{alts})\b", re.IGNORECASE)
+
+
+def tier2_violations(plain: str, rules: dict) -> list:
+    stats = rules.get("statistics", {})
+    nd = NormalDist()
+    words = re.findall(r"[A-Za-z']+", plain)
+    n_words = len(words)
+    if n_words < 20:
+        return []
+    out = []
+
+    # per-term Poisson surprise, combined via Stouffer
+    z_cap = float(stats.get("per_term_z_cap", 8.0))
+    zs, details, hits = [], [], []  # hits: (term, [word-index positions])
+    lower_words = [w.lower() for w in words]
+
+    entries = list(rules.get("tell_words", []))
+    for pat in rules.get("tell_patterns", []):
+        entries.append({"term": pat["name"], "lambda": pat["lambda"], "_pattern": pat["pattern"]})
+
+    for entry in entries:
+        lam = float(entry.get("lambda", 0.1))
+        if "_pattern" in entry:
+            try:
+                matches = list(compile_pattern(entry["_pattern"]).finditer(plain))
+            except re.error:
+                continue
+            k = len(matches)
+            positions = []
+        else:
+            rx = term_regex(entry)
+            matches = list(rx.finditer(plain))
+            k = len(matches)
+            # map char positions to word indexes for clustering
+            positions = []
+            if k:
+                word_starts = []
+                idx = 0
+                for wm in re.finditer(r"[A-Za-z']+", plain):
+                    word_starts.append(wm.start())
+                for m in matches:
+                    wi = sum(1 for s in word_starts if s <= m.start()) - 1
+                    positions.append(max(wi, 0))
+        if k == 0:
+            continue
+        mu = lam * n_words / 1000.0
+        p = poisson_tail(k, mu)
+        z = min(nd.inv_cdf(1.0 - p), z_cap) if p < 0.5 else 0.0
+        zs.append(z)
+        if z > 0.8:
+            details.append(f'"{entry["term"]}" x{k} in {n_words} words (~{k / max(mu, 1e-9):.0f}x the human rate, z={z:.1f})')
+        if positions:
+            hits.append((entry["term"], positions))
+
+    if zs:
+        composite = sum(zs) / math.sqrt(len(zs))
+        threshold = float(stats.get("composite_z_threshold", 3.0))
+        if composite > threshold:
+            out.append(
+                f"AI-typical vocabulary pattern (composite z={composite:.1f} > {threshold}): "
+                + "; ".join(details[:6])
+            )
+
+    # clustering: distinct tells inside a sliding word window
+    window = int(stats.get("cluster_window_words", 100))
+    need = int(stats.get("cluster_distinct_terms", 3))
+    flat = sorted((pos, term) for term, poss in hits for pos in poss)
+    for i in range(len(flat)):
+        in_win = {t for p, t in flat if flat[i][0] <= p < flat[i][0] + window}
+        if len(in_win) >= need:
+            out.append(
+                f"tell-word cluster: {len(in_win)} distinct AI-flavored terms "
+                f"({', '.join(sorted(in_win))}) within {window} words"
+            )
+            break
+
+    # burstiness: sentence-length uniformity
+    if n_words >= int(stats.get("burstiness_min_words", 150)):
+        sentences = [s for s in re.split(r"[.!?]+(?:\s+|$)", plain) if len(s.split()) >= 2]
+        if len(sentences) >= int(stats.get("burstiness_min_sentences", 5)):
+            lengths = [len(s.split()) for s in sentences]
+            cv = stdev(lengths) / mean(lengths) if mean(lengths) > 0 else 1.0
+            if cv < float(stats.get("burstiness_min_cv", 0.35)):
+                out.append(
+                    f"sentence rhythm too regular (length variation {cv:.2f}, human floor "
+                    f"{stats.get('burstiness_min_cv', 0.35)}): vary your sentence lengths"
+                )
+    return out
+
+
+# ---------- tier 3: semantic judge ----------
+
+def extract_json_object(s: str):
+    s = re.sub(r"```(?:json)?", "", s)
+    start = s.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(s)):
+        if s[i] == "{":
+            depth += 1
+        elif s[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(s[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def tier3_violations(text: str, rules: dict):
+    """Returns (violations, judge_ran)."""
+    cfg = rules.get("semantic_judge", {})
+    if not cfg.get("enabled", False):
+        return [], False
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return [], False
+    criteria = "\n".join(f"- {c}" for c in cfg.get("criteria", []))
+    prompt = (
+        "You are a strict writing linter. Judge whether TEXT contains any of these "
+        "AI-writing violations. Only flag clear violations with an exact quote; "
+        "borderline or defensible phrasing passes.\n\nCriteria:\n" + criteria +
+        '\n\nRespond with ONLY a JSON object, no prose: '
+        '{"pass": true|false, "violations": [{"rule": str, "quote": str, "why": str}]}'
+        "\n\nTEXT:\n" + text[:12000]
+    )
+    try:
+        proc = subprocess.run(
+            [claude_bin, "-p", "--model", cfg.get("model", "claude-haiku-4-5-20251001"),
+             "--settings", '{"disableAllHooks":true}',
+             "--no-session-persistence", "--output-format", "json", prompt],
+            capture_output=True, text=True,
+            timeout=float(cfg.get("timeout_seconds", 45)),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return [], False
+    if proc.returncode != 0:
+        return [], False
+    try:
+        wrapper = json.loads(proc.stdout)
+        verdict = extract_json_object(wrapper.get("result", ""))
+    except (json.JSONDecodeError, AttributeError):
+        return [], False
+    if not isinstance(verdict, dict):
+        return [], False
+    if verdict.get("pass", True):
+        return [], True
+    out = []
+    for v in verdict.get("violations", []):
+        if isinstance(v, dict):
+            out.append(f'{v.get("rule", "judge")}: "{str(v.get("quote", ""))[:80]}" ({v.get("why", "")})')
+    return out, True
+
+
+# ---------- main ----------
 
 def main() -> None:
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return
-    session_id = data.get("session_id", "") or ""
-    flag = flag_path(session_id)
+    flag = flag_path(data.get("session_id", "") or "")
     if not flag.exists():
         return
 
@@ -123,18 +298,31 @@ def main() -> None:
         retries = 0
     max_retries = int(rules.get("max_retries", 2))
 
-    if retries >= max_retries:
-        flag.unlink(missing_ok=True)
-        return
-
     text = last_assistant_text(data.get("transcript_path", "") or "")
     if not text.strip():
         flag.unlink(missing_ok=True)
         return
+    plain = strip_code(text)
 
-    violations = find_violations(text, rules)
+    if retries >= max_retries:
+        # cap hit: release, but fail loud about anything still wrong (tiers 1-2 only)
+        remaining = tier1_violations(plain, rules) + tier2_violations(plain, rules)
+        flag.unlink(missing_ok=True)
+        if remaining:
+            print(json.dumps({"systemMessage":
+                "writing-preset-lint: retry cap reached, releasing with unresolved violations: "
+                + "; ".join(remaining[:6])}))
+        return
+
+    violations = tier1_violations(plain, rules) + tier2_violations(plain, rules)
+    judge_violations, judge_ran = tier3_violations(text, rules)
+    violations += judge_violations
+
     if not violations:
         flag.unlink(missing_ok=True)
+        if rules.get("semantic_judge", {}).get("enabled") and not judge_ran:
+            print(json.dumps({"systemMessage":
+                "writing-preset-lint: passed on mechanical checks; semantic judge was skipped (unavailable)"}))
         return
 
     try:
@@ -148,12 +336,14 @@ def main() -> None:
     print(json.dumps({
         "decision": "block",
         "reason": (
-            "Your reply violates the human-writing preset. Mechanical linter findings: "
+            "Your reply violates the human-writing preset. Linter findings: "
             f"{listed}. Rewrite the reply fixing exactly these issues while keeping the "
-            "content. Do not add new banned vocabulary, negative parallelisms, bold "
-            "emphasis, emoji, or em dashes in the rewrite."
+            "content. Absolute rules: zero em dashes, zero emoji, no bold-term bullets. "
+            "For vocabulary findings, do not just delete the flagged words; rephrase in "
+            "plain human English and vary your sentence lengths."
         ),
     }))
+
 
 if __name__ == "__main__":
     try:
