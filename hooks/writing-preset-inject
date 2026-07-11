@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit hook: detect writing-intent prompts, inject the human-writing
+preset as context, and arm the Stop-hook linter for this session's turn.
+
+Contract: reads hook JSON on stdin. On writing intent, prints JSON with
+additionalContext and creates a flag file the linter checks. On anything else,
+disarms (removes the flag) and exits silently. Must never crash the prompt:
+all failures exit 0."""
+
+import json
+import re
+import sys
+import time
+from pathlib import Path
+
+WRITING_DIR = Path.home() / ".claude" / "writing"
+COMPACT_PRESET = WRITING_DIR / "human-writing-preset-compact.md"
+
+VERBS = r"(?:write|draft|compose|rewrite|reword|rephrase|polish|revise|proofread|tulis|tuliskan|menulis|buatkan|susun|perbaiki)"
+PROSE_NOUNS = r"(?:e-?mail|essay|article|blog|letter|post|caption|bio|report|announcement|newsletter|cover\s+letter|proposal|summary|abstract|paragraph|memo|speech|review|thread|tweet|surat|artikel|esai|laporan|ringkasan|pengumuman|makalah|paragraf|pidato|konten)"
+CODE_NOUNS = r"(?:function|script|test|class|component|module|query|migration|endpoint|api|regex|hook|program|code|schema|config|dockerfile|makefile|workflow|pipeline)"
+
+def wants_writing(prompt: str) -> bool:
+    p = prompt.lower()
+    if "#hw" in p:
+        return True
+    has_verb = re.search(rf"\b{VERBS}\b", p)
+    has_prose = re.search(rf"\b{PROSE_NOUNS}\b", p)
+    has_code = re.search(rf"\b{CODE_NOUNS}\b", p)
+    if has_verb and has_prose:
+        return True
+    if has_verb and has_code:
+        return False
+    # bare rewrite/polish verbs strongly imply prose even without a noun
+    if re.search(r"\b(?:rewrite|reword|rephrase|polish|proofread)\b", p):
+        return True
+    return False
+
+def flag_path(session_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id or "unknown")
+    return WRITING_DIR / f".active-{safe}"
+
+def cleanup_stale_flags() -> None:
+    cutoff = time.time() - 86400
+    try:
+        for f in WRITING_DIR.glob(".active-*"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+def main() -> None:
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        return
+    prompt = data.get("prompt", "") or ""
+    session_id = data.get("session_id", "") or ""
+    flag = flag_path(session_id)
+    cleanup_stale_flags()
+
+    if not wants_writing(prompt):
+        flag.unlink(missing_ok=True)
+        return
+
+    try:
+        preset = COMPACT_PRESET.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    try:
+        flag.write_text("0", encoding="utf-8")
+    except OSError:
+        pass  # still inject; enforcement just won't arm
+
+    context = (
+        "This is a writing task. The following writing rules are MANDATORY for the "
+        "prose you produce. A mechanical linter will scan your reply and reject it "
+        "if it violates the checkable rules, so a violation costs you a full rewrite.\n\n"
+        + preset
+    )
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": context,
+        }
+    }))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

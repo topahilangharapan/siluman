@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Stop hook: mechanical linter for the human-writing preset.
+
+Runs only when writing-preset-inject armed this session (flag file exists).
+Scans Claude's final reply for checkable violations defined in
+~/.claude/writing/lint-rules.json and blocks the stop, forcing a rewrite,
+up to max_retries times. All failures exit 0 — a broken linter must never
+trap a session."""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+WRITING_DIR = Path.home() / ".claude" / "writing"
+RULES_FILE = WRITING_DIR / "lint-rules.json"
+
+def flag_path(session_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id or "unknown")
+    return WRITING_DIR / f".active-{safe}"
+
+def last_assistant_text(transcript_path: str) -> str:
+    """Concatenated text blocks of the final assistant message in the JSONL transcript."""
+    text = ""
+    try:
+        with open(transcript_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") != "assistant":
+                    continue
+                msg = entry.get("message") or {}
+                content = msg.get("content")
+                if isinstance(content, list):
+                    blocks = [b.get("text", "") for b in content
+                              if isinstance(b, dict) and b.get("type") == "text"]
+                    if blocks:
+                        text = "\n".join(blocks)
+                elif isinstance(content, str) and content:
+                    text = content
+    except OSError:
+        pass
+    return text
+
+def strip_code(text: str) -> str:
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    return re.sub(r"`[^`\n]+`", " ", text)
+
+def compile_pattern(raw: str):
+    flags = 0
+    m = re.match(r"\(\?([a-zA-Z]+)\)", raw)
+    if m:
+        for ch in m.group(1):
+            flags |= {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}.get(ch, 0)
+        raw = raw[m.end():]
+    return re.compile(raw, flags)
+
+def find_violations(text: str, rules: dict) -> list:
+    violations = []
+    plain = strip_code(text)
+
+    for phrase in rules.get("banned_phrases", []):
+        pat = r"\b" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b"
+        m = re.search(pat, plain, re.IGNORECASE)
+        if m:
+            violations.append(f'banned phrase "{m.group(0)}"')
+
+    for rule in rules.get("banned_regexes", []):
+        try:
+            rx = compile_pattern(rule["pattern"])
+        except re.error:
+            continue
+        m = rx.search(plain)
+        if m:
+            snippet = m.group(0)[:60].replace("\n", " ")
+            violations.append(f'{rule["name"]}: "{snippet}"')
+
+    words = max(len(plain.split()), 1)
+    dash_budget = max(1, words // rules.get("em_dash_words_per_allowed", 300))
+    dashes = plain.count("—")
+    if dashes > dash_budget:
+        violations.append(f"em-dash overuse: {dashes} in {words} words (budget {dash_budget})")
+
+    bold_spans = len(re.findall(r"\*\*[^*\n]+\*\*", plain))
+    max_bold = rules.get("max_bold_spans", 3)
+    if bold_spans > max_bold:
+        violations.append(f"bold-heavy output: {bold_spans} bold spans (max {max_bold})")
+
+    for heading in re.findall(r"(?m)^#{1,6}\s+(.+)$", plain):
+        hwords = [w for w in heading.split() if len(w) > 3 and w.isalpha()]
+        if len(hwords) >= 3:
+            caps = sum(1 for w in hwords if w[0].isupper())
+            if caps / len(hwords) > 0.7:
+                violations.append(f'Title Case heading: "{heading[:50]}"')
+                break
+
+    return violations
+
+def main() -> None:
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        return
+    session_id = data.get("session_id", "") or ""
+    flag = flag_path(session_id)
+    if not flag.exists():
+        return
+
+    try:
+        rules = json.loads(RULES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        flag.unlink(missing_ok=True)
+        return
+
+    try:
+        retries = int(flag.read_text().strip() or "0")
+    except (OSError, ValueError):
+        retries = 0
+    max_retries = int(rules.get("max_retries", 2))
+
+    if retries >= max_retries:
+        flag.unlink(missing_ok=True)
+        return
+
+    text = last_assistant_text(data.get("transcript_path", "") or "")
+    if not text.strip():
+        flag.unlink(missing_ok=True)
+        return
+
+    violations = find_violations(text, rules)
+    if not violations:
+        flag.unlink(missing_ok=True)
+        return
+
+    try:
+        flag.write_text(str(retries + 1), encoding="utf-8")
+    except OSError:
+        pass
+
+    listed = "; ".join(violations[:12])
+    if len(violations) > 12:
+        listed += f"; and {len(violations) - 12} more"
+    print(json.dumps({
+        "decision": "block",
+        "reason": (
+            "Your reply violates the human-writing preset. Mechanical linter findings: "
+            f"{listed}. Rewrite the reply fixing exactly these issues while keeping the "
+            "content. Do not add new banned vocabulary, negative parallelisms, bold "
+            "emphasis, emoji, or em dashes in the rewrite."
+        ),
+    }))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

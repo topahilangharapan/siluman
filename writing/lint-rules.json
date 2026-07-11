@@ -1,0 +1,108 @@
+{
+  "_comment": "Mechanical enforcement rules for the human-writing preset. Read by ~/.claude/hooks/writing-preset-lint at runtime. The refresh skill regenerates banned_phrases and banned_regexes when the preset is re-synced from WP:AISIGNS.",
+  "max_retries": 2,
+  "em_dash_words_per_allowed": 300,
+  "max_bold_spans": 3,
+  "banned_phrases": [
+    "delve", "delves", "delving",
+    "tapestry",
+    "testament to",
+    "pivotal",
+    "crucial",
+    "intricate", "intricacies",
+    "interplay",
+    "vibrant",
+    "bustling",
+    "meticulous", "meticulously",
+    "seamless", "seamlessly",
+    "boasts", "boasting",
+    "garner", "garnered",
+    "bolster", "bolstered",
+    "underscores", "underscoring",
+    "showcase", "showcases", "showcasing",
+    "foster", "fostering",
+    "elevate", "elevates",
+    "leverage", "leverages", "leveraging",
+    "unlock", "unleash",
+    "embark", "embarked",
+    "ever-evolving", "ever-changing", "rapidly evolving",
+    "enduring",
+    "profound",
+    "paramount",
+    "multifaceted",
+    "groundbreaking",
+    "game-changing",
+    "cutting-edge",
+    "state-of-the-art",
+    "transformative",
+    "revolutionize",
+    "streamline", "streamlined",
+    "synergy",
+    "utilize", "utilizes", "utilizing",
+    "furthermore",
+    "it's important to note",
+    "it's worth noting",
+    "it is important to note",
+    "it is worth noting",
+    "in today's world",
+    "in the digital age",
+    "in conclusion",
+    "plays a significant role",
+    "stands as",
+    "serves as",
+    "marks a significant",
+    "continues to captivate",
+    "leaves a lasting impact",
+    "lasting legacy",
+    "a wide range of",
+    "rich history",
+    "rich cultural heritage",
+    "nestled in the heart of",
+    "must-see destination",
+    "prior to",
+    "in order to",
+    "due to the fact that",
+    "experts believe",
+    "critics argue",
+    "widely regarded as",
+    "observers note"
+  ],
+  "banned_regexes": [
+    {
+      "name": "negative parallelism (not just/only X, but Y)",
+      "pattern": "\\bnot\\s+(?:just|only|merely)\\b[^.\\n]{0,80}?\\bbut\\b"
+    },
+    {
+      "name": "negative parallelism (it's not X, it's Y)",
+      "pattern": "\\bit'?s\\s+not\\s+(?:about\\s+)?[^.\\n]{0,60}?[,;—-]\\s*it'?s\\b"
+    },
+    {
+      "name": "negative parallelism (no X, no Y, just Z)",
+      "pattern": "\\bno\\s+\\w+,\\s*no\\s+\\w+[,—-]\\s*just\\b"
+    },
+    {
+      "name": "trailing -ing significance clause",
+      "pattern": ",\\s+(?:highlighting|underscoring|showcasing|reflecting|emphasizing|cementing|demonstrating|signaling|signalling|illustrating|solidifying|reinforcing|underlining)\\b[^.\\n]*\\."
+    },
+    {
+      "name": "bullet with bold header (- **Term:** text)",
+      "pattern": "(?m)^\\s*[-*]\\s+\\*\\*[^*\\n]+?(?::\\s*\\*\\*|\\*\\*\\s*[:—-])"
+    },
+    {
+      "name": "horizontal rule",
+      "pattern": "(?m)^\\s*(?:-{3,}|\\*{3,}|_{3,})\\s*$"
+    },
+    {
+      "name": "Conclusion heading",
+      "pattern": "(?mi)^#{1,6}\\s*conclusion\\b"
+    },
+    {
+      "name": "curly double quotes",
+      "pattern": "[“”]"
+    },
+    {
+      "name": "emoji",
+      "pattern": "[\\U0001F000-\\U0001FAFF\\u2600-\\u27BF\\u2B00-\\u2BFF\\uFE0F]"
+    }
+  ]
+}
