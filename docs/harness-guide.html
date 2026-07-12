@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>The human-writing harness, explained</title>
+<title>no-tells: the human-writing harness, explained</title>
 <style>
   :root {
     --paper: #fdfdfb;
@@ -257,7 +257,7 @@
 
 <header>
   <div class="eyebrow">Claude Code harness · reference · built 11 July 2026</div>
-  <h1>The human-writing harness, explained</h1>
+  <h1>no-tells: the human-writing harness, explained</h1>
   <p class="lede">Every writing request you make goes through this machinery. It injects your
   writing rules next to the prompt, then checks the finished reply three different ways, and
   rejects it until it reads like a person wrote it. Nothing here depends on the model choosing
@@ -396,7 +396,7 @@
     <tr><td><code>~/.claude/writing/.active-&lt;session&gt;</code></td><td>flag file arming the linter for one writing turn; holds the retry counter</td></tr>
     <tr><td><code>~/.claude/skills/human-writing-preset-refresh/</code></td><td>skill that re-syncs preset and lambdas from Wikipedia's "Signs of AI writing"</td></tr>
     <tr><td><code>~/.claude/settings.json</code></td><td>registers both hooks (inject 5s timeout, lint 60s)</td></tr>
-    <tr><td><code>~/Documents/Code/claude-harness</code></td><td>git snapshot of all of the above, plus this page</td></tr>
+    <tr><td>the <code>no-tells</code> repo</td><td>git snapshot of all of the above, plus this page</td></tr>
   </table>
 </section>
 
