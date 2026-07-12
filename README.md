@@ -1,8 +1,8 @@
-# no-tells
+# siluman
 
 Claude Code hooks that catch AI-writing tells and force a rewrite.
 
-Ask a language model for an email and you get text with fingerprints all over it: "delve", "testament to", an em dash every other sentence, bullet lists where each item opens with a bolded term, and the inescapable "not just X, but Y". Wikipedia editors keep a field guide to these fingerprints at [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing). no-tells turns that guide into an enforcement loop for Claude Code. The rules are injected next to every writing prompt, a linter scans the reply, and anything that still reads like a model gets blocked and rewritten before you see it.
+Ask a language model for an email and you get text with fingerprints all over it: "delve", "testament to", an em dash every other sentence, bullet lists where each item opens with a bolded term, and the inescapable "not just X, but Y". Wikipedia editors keep a field guide to these fingerprints at [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing). siluman turns that guide into an enforcement loop for Claude Code. The rules are injected next to every writing prompt, a linter scans the reply, and anything that still reads like a model gets blocked and rewritten before you see it.
 
 ## Why hooks and not CLAUDE.md
 
@@ -56,8 +56,8 @@ A blocked reply goes back to Claude with the offending quotes, and after two rew
 ## Install
 
 ```sh
-git clone https://github.com/topahilangharapan/no-tells
-cd no-tells
+git clone https://github.com/topahilangharapan/siluman
+cd siluman
 ./install.sh
 ```
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs the no-tells harness into ~/.claude (override with CLAUDE_DIR).
+# Installs the siluman harness into ~/.claude (override with CLAUDE_DIR).
 set -euo pipefail
 
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
