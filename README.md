@@ -39,7 +39,9 @@ prose with no tells
 
 ### The gate
 
-`hooks/writing-preset-inject` fires on prompts that look like prose requests: a writing verb (write, draft, rewrite, polish) plus a prose noun (email, essay, article, blog, report). It understands Indonesian too (tuliskan, buatkan artikel, susun laporan). "Write a function that parses JSON" does not trigger it, because code nouns veto the match. Add `#hw` to any prompt to force it on.
+`hooks/writing-preset-inject` fires on prompts that look like prose requests: a writing verb (write, draft, rewrite, reply, improve, summarize, ...) plus a prose noun (email, essay, article, blog, message, explanation, ...). It understands Indonesian too (tuliskan, buatkan artikel, susun laporan). Bare polish verbs ("improve this", "shorten it") and phrases like "make it sound more professional" trigger without needing a noun at all. "Write a function that parses JSON" does not trigger it, because code nouns veto the match. "document"/"documentation" gets the same veto treatment even though it's also a recognized prose noun: "draft documentation" triggers, "write documentation for this API" doesn't. Add `#hw` to any prompt to force it on.
+
+Writing is rarely one turn, and some skills run a multi-phase clarify-first intake before any prose exists at all. So once a prompt arms the session, it stays armed - re-injecting the preset every turn for salience - through any number of ordinary follow-ups ("make it shorter", "yes, do that", a clarifying answer), not just the first reply. Only a clear pivot to a code-shaped request disarms it early; otherwise it lasts until the retry cap releases it or the session's 24-hour-stale flag gets swept.
 
 ### The linter
 

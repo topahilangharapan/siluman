@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: detect writing-intent prompts, inject the human-writing
-preset as context, and arm the Stop-hook linter for this session's turn.
+preset as context, and arm the Stop-hook linter.
 
 Contract: reads hook JSON on stdin. On writing intent, prints JSON with
-additionalContext and creates a flag file the linter checks. On anything else,
-disarms (removes the flag) and exits silently. Must never crash the prompt:
-all failures exit 0."""
+additionalContext and writes a JSON flag file {"retries": 0} the linter
+checks. Writing tasks are rarely one turn (a follow-up like "make it
+shorter", or a skill's own multi-phase clarify-first intake, can run many
+turns before real prose appears), so once armed a session STAYS armed and
+keeps getting the preset re-injected every turn - not just the vocabulary
+match - until a clear pivot to a code-shaped request disarms it. Must never
+crash the prompt: all failures exit 0."""
 
 import json
 import re
@@ -16,9 +20,16 @@ from pathlib import Path
 WRITING_DIR = Path.home() / ".claude" / "writing"
 COMPACT_PRESET = WRITING_DIR / "human-writing-preset-compact.md"
 
-VERBS = r"(?:write|draft|compose|rewrite|reword|rephrase|polish|revise|proofread|tulis|tuliskan|menulis|buatkan|susun|perbaiki)"
-PROSE_NOUNS = r"(?:e-?mail|essay|article|blog|letter|post|caption|bio|report|announcement|newsletter|cover\s+letter|proposal|summary|abstract|paragraph|memo|speech|review|thread|tweet|surat|artikel|esai|laporan|ringkasan|pengumuman|makalah|paragraf|pidato|konten)"
+VERBS = r"(?:write|draft|compose|rewrite|reword|rephrase|polish|revise|proofread|respond|reply|improve|shorten|expand|lengthen|tighten|trim|summarize|tulis|tuliskan|menulis|buatkan|susun|perbaiki)"
+PROSE_NOUNS = r"(?:e-?mail|essay|article|blog|letter|post|caption|bio|report|announcement|newsletter|cover\s+letter|proposal|summary|abstract|paragraph|memo|speech|review|thread|tweet|message|text\s+message|sentence(?:s)?|explanation|description|response|reply|note|comment|story|update|statement|surat|artikel|esai|laporan|ringkasan|pengumuman|makalah|paragraf|pidato|konten|pesan)"
 CODE_NOUNS = r"(?:function|script|test|class|component|module|query|migration|endpoint|api|regex|hook|program|code|schema|config|dockerfile|makefile|workflow|pipeline)"
+BARE_POLISH = r"\b(?:rewrite|reword|rephrase|polish|proofread|improve|shorten|expand|lengthen|tighten|trim|summarize)\b"
+MAKE_ADJ = r"\bmake\s+(?:this|it|that)\s+(?:sound|read|feel|shorter|longer|(?:more|less)\s+\w+)\b"
+# "document"/"documentation" is ambiguous between a business document (prose)
+# and code/API documentation (headers, bullets, code blocks - exactly what
+# the linter bans). Kept separate from PROSE_NOUNS so the code-noun veto
+# always wins for this pair specifically, regardless of match order.
+DOC_NOUNS = r"\bdocument(?:ation)?\b"
 
 def wants_writing(prompt: str) -> bool:
     p = prompt.lower()
@@ -31,10 +42,24 @@ def wants_writing(prompt: str) -> bool:
         return True
     if has_verb and has_code:
         return False
-    # bare rewrite/polish verbs strongly imply prose even without a noun
-    if re.search(r"\b(?:rewrite|reword|rephrase|polish|proofread)\b", p):
+    # bare polish verbs, or "make it/this sound/shorter/...", strongly imply
+    # prose even without a noun
+    if re.search(BARE_POLISH, p) or re.search(MAKE_ADJ, p):
+        return True
+    # "draft documentation" is prose; "write documentation for this API" is
+    # not (has_code above already caught that case and returned False first)
+    if has_verb and re.search(DOC_NOUNS, p) and not has_code:
         return True
     return False
+
+def pivots_to_code(prompt: str) -> bool:
+    """A clear signal the turn moved to a code-shaped request: a code noun
+    with no prose noun in sight. The only thing that disarms an already-armed
+    session before the retry cap or the 24h stale-flag sweep does."""
+    p = prompt.lower()
+    has_code = re.search(rf"\b{CODE_NOUNS}\b", p)
+    has_prose = re.search(rf"\b{PROSE_NOUNS}\b", p) or re.search(DOC_NOUNS, p)
+    return bool(has_code and not has_prose)
 
 def flag_path(session_id: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id or "unknown")
@@ -49,6 +74,37 @@ def cleanup_stale_flags() -> None:
     except OSError:
         pass
 
+def write_flag(flag: Path, retries: int) -> None:
+    try:
+        flag.write_text(json.dumps({"retries": retries}), encoding="utf-8")
+    except OSError:
+        pass  # still inject; enforcement just won't arm
+
+def build_context():
+    try:
+        preset = COMPACT_PRESET.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    overrides = WRITING_DIR / "user-overrides.md"
+    try:
+        preset += "\n\n" + overrides.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    return (
+        "This is a writing task. The following writing rules are MANDATORY for the "
+        "prose you produce. A mechanical linter will scan your reply and reject it "
+        "if it violates the checkable rules, so a violation costs you a full rewrite.\n\n"
+        + preset
+    )
+
+def emit(context: str) -> None:
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": context,
+        }
+    }))
+
 def main() -> None:
     try:
         data = json.load(sys.stdin)
@@ -59,37 +115,25 @@ def main() -> None:
     flag = flag_path(session_id)
     cleanup_stale_flags()
 
-    if not wants_writing(prompt):
+    if wants_writing(prompt):
+        write_flag(flag, retries=0)
+        context = build_context()
+        if context is not None:
+            emit(context)
+        return
+
+    if pivots_to_code(prompt):
         flag.unlink(missing_ok=True)
         return
 
-    try:
-        preset = COMPACT_PRESET.read_text(encoding="utf-8")
-    except OSError:
-        return
-    overrides = WRITING_DIR / "user-overrides.md"
-    try:
-        preset += "\n\n" + overrides.read_text(encoding="utf-8")
-    except OSError:
-        pass
-
-    try:
-        flag.write_text("0", encoding="utf-8")
-    except OSError:
-        pass  # still inject; enforcement just won't arm
-
-    context = (
-        "This is a writing task. The following writing rules are MANDATORY for the "
-        "prose you produce. A mechanical linter will scan your reply and reject it "
-        "if it violates the checkable rules, so a violation costs you a full rewrite.\n\n"
-        + preset
-    )
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": context,
-        }
-    }))
+    # Ambiguous follow-up ("make it shorter", "yes", a clarifying-intake
+    # answer from a multi-phase skill, ...): if a writing thread is already
+    # armed, leave it armed and keep re-injecting for salience - only a clear
+    # code pivot (above) or the retry cap (in writing-preset-lint) ends it.
+    if flag.exists():
+        context = build_context()
+        if context is not None:
+            emit(context)
 
 if __name__ == "__main__":
     try:

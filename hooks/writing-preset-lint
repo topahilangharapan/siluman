@@ -9,8 +9,12 @@ Tier 3: semantic judge - headless `claude -p` (Haiku) evaluates intent/context
         criteria regexes cannot see. Fail-open on any judge failure.
 
 Runs only when writing-preset-inject armed this session. Blocks with a merged
-violation list from all tiers, capped at max_retries rewrites. All failures
-exit 0 - a broken linter must never trap a session."""
+violation list from all tiers, capped at max_retries rewrites. A clean pass
+resets the retry counter but leaves the flag armed (writing-preset-inject owns
+arm/disarm across turns and keeps a thread armed until a clear code-shaped
+pivot) - the flag is only deleted here when the retry cap is hit, so a stuck
+thread can't loop forever. All failures exit 0 - a broken linter must never
+trap a session."""
 
 import json
 import math
@@ -28,6 +32,23 @@ RULES_FILE = WRITING_DIR / "lint-rules.json"
 def flag_path(session_id: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id or "unknown")
     return WRITING_DIR / f".active-{safe}"
+
+
+def read_flag_state(flag: Path) -> dict:
+    try:
+        state = json.loads(flag.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {"retries": 0}
+    if not isinstance(state, dict):
+        return {"retries": 0}
+    return state
+
+
+def write_flag_state(flag: Path, retries: int) -> None:
+    try:
+        flag.write_text(json.dumps({"retries": retries}), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def last_assistant_text(transcript_path: str) -> str:
@@ -292,10 +313,8 @@ def main() -> None:
         flag.unlink(missing_ok=True)
         return
 
-    try:
-        retries = int(flag.read_text().strip() or "0")
-    except (OSError, ValueError):
-        retries = 0
+    state = read_flag_state(flag)
+    retries = int(state.get("retries", 0))
     max_retries = int(rules.get("max_retries", 2))
 
     text = last_assistant_text(data.get("transcript_path", "") or "")
@@ -319,16 +338,16 @@ def main() -> None:
     violations += judge_violations
 
     if not violations:
-        flag.unlink(missing_ok=True)
+        # clean pass: reset the retry counter but leave the flag armed, so a
+        # later ambiguous follow-up turn still gets linted without needing
+        # its own vocabulary match (writing-preset-inject owns disarming)
+        write_flag_state(flag, retries=0)
         if rules.get("semantic_judge", {}).get("enabled") and not judge_ran:
             print(json.dumps({"systemMessage":
                 "writing-preset-lint: passed on mechanical checks; semantic judge was skipped (unavailable)"}))
         return
 
-    try:
-        flag.write_text(str(retries + 1), encoding="utf-8")
-    except OSError:
-        pass
+    write_flag_state(flag, retries=retries + 1)
 
     listed = "; ".join(violations[:12])
     if len(violations) > 12:
