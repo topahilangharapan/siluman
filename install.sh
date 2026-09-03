@@ -13,10 +13,6 @@ install -m 755 "$repo/hooks/writing-preset-lint" "$CLAUDE_DIR/hooks/writing-pres
 cp "$repo/writing/human-writing-preset.md" "$CLAUDE_DIR/writing/"
 cp "$repo/writing/human-writing-preset-compact.md" "$CLAUDE_DIR/writing/"
 cp "$repo/writing/lint-rules.json" "$CLAUDE_DIR/writing/"
-cp "$repo/writing/ste100-preset.md" "$CLAUDE_DIR/writing/"
-cp "$repo/writing/ste100-preset-compact.md" "$CLAUDE_DIR/writing/"
-cp "$repo/writing/ste100-lint-rules.json" "$CLAUDE_DIR/writing/"
-cp "$repo/writing/ste100-dictionary.json" "$CLAUDE_DIR/writing/"
 
 # personal rules survive reinstalls and preset refreshes
 if [ ! -f "$CLAUDE_DIR/writing/user-overrides.md" ]; then
@@ -47,6 +43,4 @@ Last step: register the hooks in $CLAUDE_DIR/settings.json
 }
 
 Then start a fresh claude session and try: write a short blog post about coffee
-(general mode) or: write a maintenance procedure for replacing a fuel filter
-(ASD-STE100 mode - or add "#ste" to any prompt to force it on)
 EOF

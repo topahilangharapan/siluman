@@ -57,11 +57,17 @@ Design principle: **inject deterministically, then verify deterministically.** T
 3. Live test in a fresh `claude` session: a writing prompt (confirm injected context + a deliberately provoked rewrite by asking it to use the word "delve"), then a coding prompt (confirm no injection, no lint).
 4. Confirm the retry cap by making the linter temporarily impossible to satisfy and watching it release after 2 blocks.
 
-## Follow-up: ASD-STE100 mode (2026-09-03)
+## Follow-up: ASD-STE100 mode (2026-09-03, retired same day)
 
 This document describes the original, AISIGNS-only design. A second, independent writing mode was
 added afterward: ASD-STE100 Simplified Technical English, gated separately for technical/procedural
 writing prompts (manuals, SOPs, work instructions) and enforced by its own preset, dictionary, and
 lint-rules file rather than layered onto the design above. See the plan at
-`~/.claude/plans/replicated-sprouting-flame.md` (or the README's "STE100 mode" section) for that
-design; this file is left as-is as the historical record of the original harness.
+`~/.claude/plans/replicated-sprouting-flame.md` (or the README's git history) for that design.
+
+That mode was retired the same day: its aerospace-manual-specific machinery (controlled vocabulary,
+banned verb tenses, imperative-only procedures, WARNING/CAUTION/NOTE structure) actively hurt normal
+daily writing (CVs, research proposals, email). A few genuinely useful ideas from it (default active
+voice, name ambiguous referents, avoid noun-pileups) were folded into `user-overrides.md` and the
+single general preset instead. See the plan at `~/.claude/plans/stateful-weaving-garden.md` for that
+merge. This file is left as-is as the historical record.

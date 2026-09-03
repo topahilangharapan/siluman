@@ -1,15 +1,15 @@
 # siluman
 
-Claude Code hooks that catch AI-writing tells and force a rewrite - or, for technical
-documentation, force compliance with ASD-STE100 Simplified Technical English instead.
+Claude Code hooks that catch AI-writing tells and force a rewrite.
 
 Ask a language model for an email and you get text with fingerprints all over it: "delve", "testament to", an em dash every other sentence, bullet lists where each item opens with a bolded term, and the inescapable "not just X, but Y". Wikipedia editors keep a field guide to these fingerprints at [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing). siluman turns that guide into an enforcement loop for Claude Code. The rules are injected next to every writing prompt, a linter scans the reply, and anything that still reads like a model gets blocked and rewritten before you see it.
 
-Ask for a maintenance manual, an SOP, or work instructions and the same hooks switch to a
-second, unrelated ruleset instead: [ASD-STE100](https://www.asd-ste100.org/) Simplified Technical
-English, the aerospace/defense industry's controlled language - a ~875-word approved dictionary,
-strict sentence/paragraph caps, imperative-only procedures, and a defined WARNING/CAUTION/NOTE
-structure. See [STE100 mode](#ste100-mode-technical-documentation) below.
+The same preset covers email, messages, essays, research proposals, CVs, and documentation - one
+ruleset for daily writing, not a mode you have to pick. A few clarity ideas borrowed from technical
+writing (default active voice, name ambiguous referents, avoid noun-pileups) live on in
+`writing/user-overrides.md`; an earlier version of this repo shipped a separate, much stricter
+ASD-STE100 mode for aerospace-style manuals, retired because it fought normal prose (see
+`docs/PLAN.md` for that history).
 
 ## Why hooks and not CLAUDE.md
 
@@ -46,7 +46,7 @@ prose with no tells
 
 ### The gate
 
-`hooks/writing-preset-inject` fires on prompts that look like prose requests: a writing verb (write, draft, rewrite, reply, improve, summarize, ...) plus a prose noun (email, essay, article, blog, message, explanation, ...). It understands Indonesian too (tuliskan, buatkan artikel, susun laporan). Bare polish verbs ("improve this", "shorten it") and phrases like "make it sound more professional" trigger without needing a noun at all. "Write a function that parses JSON" does not trigger it, because code nouns veto the match. "document"/"documentation" gets the same veto treatment even though it's also a recognized prose noun: "draft documentation" triggers, "write documentation for this API" doesn't. Add `#hw` to any prompt to force it on.
+`hooks/writing-preset-inject` fires on prompts that look like prose requests: a writing verb (write, draft, rewrite, reply, improve, summarize, ...) plus a prose noun (email, essay, article, blog, message, explanation, CV, resume, research proposal, manual, SOP, ...). It understands Indonesian too (tuliskan, buatkan artikel, susun laporan). Bare polish verbs ("improve this", "shorten it") and phrases like "make it sound more professional" trigger without needing a noun at all. "Write a function that parses JSON" does not trigger it, because code nouns veto the match. "document"/"documentation" gets the same veto treatment even though it's also a recognized prose noun: "draft documentation" triggers, "write documentation for this API" doesn't. Add `#hw` to any prompt to force it on.
 
 Writing is rarely one turn, and some skills run a multi-phase clarify-first intake before any prose exists at all. So once a prompt arms the session, it stays armed - re-injecting the preset every turn for salience - through any number of ordinary follow-ups ("make it shorter", "yes, do that", a clarifying answer), not just the first reply. Only a clear pivot to a code-shaped request disarms it early; otherwise it lasts until the retry cap releases it or the session's 24-hour-stale flag gets swept.
 
@@ -62,42 +62,15 @@ Tier 3 pipes the reply through a headless `claude -p` call on Haiku with criteri
 
 A blocked reply goes back to Claude with the offending quotes, and after two rewrites the linter releases the turn rather than trapping the session, reporting whatever is still wrong. Every failure path in both hooks exits 0; a broken linter must never lock up Claude Code.
 
-## STE100 mode (technical documentation)
+### Clarity rules borrowed from technical writing
 
-`writing-preset-inject` runs a second, separate gate before the general-prose one: a mention of
-"STE"/"STE100"/"simplified technical english", or a writing verb plus a technical-documentation
-noun (manual, SOP, work instructions, maintenance manual, technical documentation/publication,
-installation guide, service bulletin, work/task card, spec, maintenance procedure). This gate wins
-over the general one when both would match, on the theory that an explicit ask for a manual means
-the user wants STE100 output, not "sound human" prose. Add `#ste` to any prompt to force it on.
-
-This is not the AI-tells preset with extra rules bolted on - it's a different ruleset entirely,
-paraphrased from [ASD-STE100](https://www.asd-ste100.org/) Issue 9 (2025-01-15):
-
-- **Controlled vocabulary**: every word must be in the approved dictionary (`ste100-dictionary.json`,
-  2,188 entries: ~875 approved words with their single approved meaning/part of speech, ~1,300
-  not-approved words each mapped to its approved alternative(s)) or qualify as a technical noun/verb.
-- **Sentence and paragraph caps**: 20 words per procedural (instruction) sentence, 25 for
-  descriptive sentences and notes, 6 sentences per descriptive paragraph - counted with STE100's own
-  word-counting rules (a number, a number+unit, an abbreviation, an alphanumeric ID, a quoted span,
-  a proper noun, and a hyphenated compound each count as one word).
-- **Verb discipline**: only infinitive, imperative, simple present/past/future, and
-  past-participle-as-adjective. No perfect or progressive tenses, no passive-voice auxiliary chains,
-  active voice everywhere except descriptive text with a genuinely unknown agent.
-- **WARNING/CAUTION/NOTE structure**: WARNING = risk of injury or death, CAUTION = risk of
-  equipment damage; every one needs a leading command/condition and a stated consequence. Notes
-  give information only, never a command.
-- **No semicolons, ever.**
-
-STE100 explicitly doesn't regulate formatting, so siluman's usual formatting hygiene (no
-bold-header bullets, no horizontal rules, no emoji, no curly quotes, sentence-case headings) still
-applies in this mode as a gap-filler - see `writing/ste100-preset.md` §10.
-
-`writing/ste100-dictionary.json` is extracted from ASD-STE100 Issue 9, © ASD (Aerospace, Security
-and Defence Industries Association of Europe). ASD's usage-rights clause grants free reproduction
-to ASD/AIA/AIAC members, their customers, defense ministries, airlines, airworthiness authorities,
-and universities for educational use - confirm you qualify (or keep this repo private) before
-publishing a fork that includes it.
+`writing/user-overrides.md` also carries three rules adapted from technical-writing discipline
+(originally explored here as a separate, much stricter ASD-STE100 mode, then retired): default to
+active voice unless the actor is genuinely unknown, name the noun instead of an ambiguous "this"/"it",
+and don't stack four or more nouns into one unbroken compound phrase. Matching `(clarity)`-prefixed
+criteria in `lint-rules.json`'s semantic judge back these up. Everything else from that experiment,
+the controlled vocabulary, banned verb tenses, imperative-only procedures, WARNING/CAUTION/NOTE
+structure, was aerospace-manual-specific and fought normal prose, so it didn't survive the merge.
 
 ## Install
 
@@ -134,18 +107,11 @@ Requirements: Claude Code and Python 3.8+ on PATH. Tier 3 spends one extra Haiku
 - `semantic_judge`: enabled flag, model, timeout, and the criteria handed to the judge.
 - `max_retries`: rewrites before the linter gives up (default 2).
 
-`writing/user-overrides.md` is appended to every injection and survives preset refreshes. The bundled copy bans em dashes outright; put your own non-negotiables there.
-
-`writing/ste100-lint-rules.json` is STE100 mode's equivalent: sentence/paragraph word caps, the
-word-counting exception patterns, the shared semicolon ban, and the semantic-judge criteria for
-what regex can't check (passive voice, banned verb constructions, WARNING/CAUTION compliance,
-terminology consistency). `writing/ste100-dictionary.json` holds the approved/not-approved word
-list the linter checks against; it's deterministic, not statistical - either a word is approved or
-it isn't.
+`writing/user-overrides.md` is appended to every injection and survives preset refreshes. The bundled copy bans em dashes and semicolons outright and adds the active-voice/ambiguous-referent/noun-pileup clarity rules; put your own non-negotiables there too.
 
 ## Refreshing the preset
 
-Wikipedia editors keep adding tells as models pick up new habits. The bundled skill (`skills/human-writing-preset-refresh`) re-derives both preset files and the `tell_words` list from the live page. In Claude Code, say "refresh the writing preset". It never touches `hard_bans`, `statistics`, or your overrides.
+Wikipedia editors keep adding tells as models pick up new habits. The bundled skill (`skills/human-writing-preset-refresh`) re-derives both preset files and the `tell_words` list from the live page. In Claude Code, say "refresh the writing preset". It never touches `hard_bans`, `statistics`, your overrides, or the `(clarity)`-prefixed semantic-judge criteria.
 
 ## Try it in a browser
 
@@ -154,15 +120,11 @@ Wikipedia editors keep adding tells as models pick up new habits. The bundled sk
 ## Repo layout
 
 ```
-hooks/writing-preset-inject               UserPromptSubmit hook: gate (both modes), inject, arm
-hooks/writing-preset-lint                 Stop hook: linter, dispatched by session mode
+hooks/writing-preset-inject               UserPromptSubmit hook: gate, inject, arm
+hooks/writing-preset-lint                 Stop hook: linter
 writing/human-writing-preset.md           full AI-tells preset (~2.5k tokens), reference copy
-writing/human-writing-preset-compact.md   what actually gets injected in general mode (~600 tokens)
-writing/lint-rules.json                   general-mode tier 1-3 configuration
-writing/ste100-preset.md                  full STE100 preset, reference copy
-writing/ste100-preset-compact.md          what actually gets injected in ste100 mode
-writing/ste100-lint-rules.json            ste100-mode linter configuration
-writing/ste100-dictionary.json            ASD-STE100 approved/not-approved word list
+writing/human-writing-preset-compact.md   what actually gets injected (~600 tokens)
+writing/lint-rules.json                   tier 1-3 configuration
 writing/user-overrides.md                 personal rules, never clobbered by refresh
 skills/human-writing-preset-refresh/      skill that regenerates the AI-tells preset from Wikipedia
 docs/                                     interactive guide, design plan, plan review
@@ -175,10 +137,3 @@ The code (hooks, install script, guide pages) is MIT, see [LICENSE](LICENSE). Th
 texts (`writing/human-writing-preset*.md` and `skills/human-writing-preset-refresh/assets/`) are
 derived from Wikipedia's [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing)
 and therefore carry its license, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
-
-`writing/ste100-preset*.md` and `writing/ste100-lint-rules.json` are paraphrased instructions, not
-a reproduction, of ASD-STE100's writing rules. `writing/ste100-dictionary.json` is a direct
-extraction of ASD-STE100's controlled dictionary and is **not** covered by this repo's MIT license -
-it's © ASD (Aerospace, Security and Defence Industries Association of Europe), used here under
-ASD-STE100's own usage-rights terms. See the [STE100 mode](#ste100-mode-technical-documentation)
-section above before publishing a fork that includes it.
