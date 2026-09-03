@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: detect writing-intent prompts, inject the human-writing
-preset as context, and arm the Stop-hook linter.
+"""UserPromptSubmit hook: detect writing-intent prompts, inject the applicable
+writing preset as context, and arm the Stop-hook linter.
+
+Two mutually exclusive modes, chosen per turn and remembered in the session's
+flag file:
+  - "general"  - Wikipedia WP:AISIGNS-derived "sound human, not a model" preset,
+                 for ordinary prose (email, essay, article, blog, ...).
+  - "ste100"   - ASD-STE100 Simplified Technical English preset, for technical/
+                 procedural writing (manuals, SOPs, work instructions). This is
+                 a genuinely different ruleset (controlled vocabulary, strict
+                 sentence caps, imperative mood) - it does not layer on top of
+                 the general preset, it replaces it for the turn.
 
 Contract: reads hook JSON on stdin. On writing intent, prints JSON with
-additionalContext and writes a JSON flag file {"retries": 0} the linter
-checks. Writing tasks are rarely one turn (a follow-up like "make it
-shorter", or a skill's own multi-phase clarify-first intake, can run many
-turns before real prose appears), so once armed a session STAYS armed and
-keeps getting the preset re-injected every turn - not just the vocabulary
-match - until a clear pivot to a code-shaped request disarms it. Must never
-crash the prompt: all failures exit 0."""
+additionalContext and writes a JSON flag file {"retries": 0, "mode": "..."}
+the linter checks. Writing tasks are rarely one turn (a follow-up like "make
+it shorter", or a skill's own multi-phase clarify-first intake, can run many
+turns before real prose appears), so once armed a session STAYS armed in its
+current mode - re-injecting the preset every turn for salience - until a
+clear pivot to a code-shaped request disarms it. Must never crash the
+prompt: all failures exit 0."""
 
 import json
 import re
@@ -19,8 +29,9 @@ from pathlib import Path
 
 WRITING_DIR = Path.home() / ".claude" / "writing"
 COMPACT_PRESET = WRITING_DIR / "human-writing-preset-compact.md"
+STE100_COMPACT_PRESET = WRITING_DIR / "ste100-preset-compact.md"
 
-VERBS = r"(?:write|draft|compose|rewrite|reword|rephrase|polish|revise|proofread|respond|reply|improve|shorten|expand|lengthen|tighten|trim|summarize|tulis|tuliskan|menulis|buatkan|susun|perbaiki)"
+VERBS = r"(?:write|draft|compose|rewrite|reword|rephrase|polish|revise|proofread|respond|reply|improve|shorten|expand|lengthen|tighten|trim|summarize|prepare|create|tulis|tuliskan|menulis|buatkan|susun|perbaiki)"
 PROSE_NOUNS = r"(?:e-?mail|essay|article|blog|letter|post|caption|bio|report|announcement|newsletter|cover\s+letter|proposal|summary|abstract|paragraph|memo|speech|review|thread|tweet|message|text\s+message|sentence(?:s)?|explanation|description|response|reply|note|comment|story|update|statement|surat|artikel|esai|laporan|ringkasan|pengumuman|makalah|paragraf|pidato|konten|pesan)"
 CODE_NOUNS = r"(?:function|script|test|class|component|module|query|migration|endpoint|api|regex|hook|program|code|schema|config|dockerfile|makefile|workflow|pipeline)"
 BARE_POLISH = r"\b(?:rewrite|reword|rephrase|polish|proofread|improve|shorten|expand|lengthen|tighten|trim|summarize)\b"
@@ -30,6 +41,24 @@ MAKE_ADJ = r"\bmake\s+(?:this|it|that)\s+(?:sound|read|feel|shorter|longer|(?:mo
 # the linter bans). Kept separate from PROSE_NOUNS so the code-noun veto
 # always wins for this pair specifically, regardless of match order.
 DOC_NOUNS = r"\bdocument(?:ation)?\b"
+
+# Technical/procedural-writing gate (ASD-STE100 mode). Deliberately narrow:
+# only clearly technical-documentation nouns, or an explicit STE/STE100
+# mention, or the manual override token.
+TECH_NOUNS = r"(?:manuals?|sops?|work\s+instructions?|maintenance\s+manuals?|technical\s+documentation|technical\s+publications?|installation\s+guides?|service\s+bulletins?|work\s+cards?|task\s+cards?|spec(?:ification)?s?|maintenance\s+procedures?|technical\s+manuals?)"
+STE_MENTION = r"\b(?:ste100|ste-100|simplified\s+technical\s+english)\b"
+
+
+def wants_ste100(prompt: str) -> bool:
+    p = prompt.lower()
+    if "#ste" in p:
+        return True
+    if re.search(STE_MENTION, p):
+        return True
+    has_verb = re.search(rf"\b{VERBS}\b", p)
+    has_tech_noun = re.search(rf"\b{TECH_NOUNS}\b", p)
+    return bool(has_verb and has_tech_noun)
+
 
 def wants_writing(prompt: str) -> bool:
     p = prompt.lower()
@@ -52,6 +81,7 @@ def wants_writing(prompt: str) -> bool:
         return True
     return False
 
+
 def pivots_to_code(prompt: str) -> bool:
     """A clear signal the turn moved to a code-shaped request: a code noun
     with no prose noun in sight. The only thing that disarms an already-armed
@@ -61,9 +91,11 @@ def pivots_to_code(prompt: str) -> bool:
     has_prose = re.search(rf"\b{PROSE_NOUNS}\b", p) or re.search(DOC_NOUNS, p)
     return bool(has_code and not has_prose)
 
+
 def flag_path(session_id: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id or "unknown")
     return WRITING_DIR / f".active-{safe}"
+
 
 def cleanup_stale_flags() -> None:
     cutoff = time.time() - 86400
@@ -74,28 +106,56 @@ def cleanup_stale_flags() -> None:
     except OSError:
         pass
 
-def write_flag(flag: Path, retries: int) -> None:
+
+def read_flag_mode(flag: Path) -> str:
     try:
-        flag.write_text(json.dumps({"retries": retries}), encoding="utf-8")
+        state = json.loads(flag.read_text(encoding="utf-8"))
+        mode = state.get("mode", "general") if isinstance(state, dict) else "general"
+    except (OSError, json.JSONDecodeError, ValueError):
+        mode = "general"
+    return mode if mode in ("general", "ste100") else "general"
+
+
+def write_flag(flag: Path, retries: int, mode: str) -> None:
+    try:
+        flag.write_text(json.dumps({"retries": retries, "mode": mode}), encoding="utf-8")
     except OSError:
         pass  # still inject; enforcement just won't arm
 
-def build_context():
+
+STE100_FORMATTING_GAPFILL = (
+    "\n\nFORMATTING (STE100 doesn't regulate this - siluman's general formatting hygiene "
+    "still applies): sentence-case headings, no skipped heading levels, almost no bold, no "
+    "\"- **Term:** text\" bullet pattern, no horizontal rules, no emoji, no \"Conclusion\" "
+    "section, straight quotes, no em dash more than once per ~300 words."
+)
+
+
+def build_context(mode: str):
+    preset_path = STE100_COMPACT_PRESET if mode == "ste100" else COMPACT_PRESET
     try:
-        preset = COMPACT_PRESET.read_text(encoding="utf-8")
+        preset = preset_path.read_text(encoding="utf-8")
     except OSError:
         return None
+    if mode == "ste100":
+        preset += STE100_FORMATTING_GAPFILL
     overrides = WRITING_DIR / "user-overrides.md"
     try:
         preset += "\n\n" + overrides.read_text(encoding="utf-8")
     except OSError:
         pass
-    return (
-        "This is a writing task. The following writing rules are MANDATORY for the "
-        "prose you produce. A mechanical linter will scan your reply and reject it "
-        "if it violates the checkable rules, so a violation costs you a full rewrite.\n\n"
-        + preset
+    intro = (
+        "This is a Simplified Technical English (ASD-STE100) writing task. The following "
+        "rules are MANDATORY for the text you produce."
+        if mode == "ste100" else
+        "This is a writing task. The following writing rules are MANDATORY for the prose "
+        "you produce."
     )
+    return (
+        intro + " A mechanical linter will scan your reply and reject it if it violates the "
+        "checkable rules, so a violation costs you a full rewrite.\n\n" + preset
+    )
+
 
 def emit(context: str) -> None:
     print(json.dumps({
@@ -104,6 +164,7 @@ def emit(context: str) -> None:
             "additionalContext": context,
         }
     }))
+
 
 def main() -> None:
     try:
@@ -115,9 +176,19 @@ def main() -> None:
     flag = flag_path(session_id)
     cleanup_stale_flags()
 
+    # STE100 gate takes precedence: an explicit ask for technical/procedural
+    # writing (or the #ste override) wins even if a general prose noun also
+    # matches, since the user is explicitly asking for STE100 output.
+    if wants_ste100(prompt):
+        write_flag(flag, retries=0, mode="ste100")
+        context = build_context("ste100")
+        if context is not None:
+            emit(context)
+        return
+
     if wants_writing(prompt):
-        write_flag(flag, retries=0)
-        context = build_context()
+        write_flag(flag, retries=0, mode="general")
+        context = build_context("general")
         if context is not None:
             emit(context)
         return
@@ -128,12 +199,15 @@ def main() -> None:
 
     # Ambiguous follow-up ("make it shorter", "yes", a clarifying-intake
     # answer from a multi-phase skill, ...): if a writing thread is already
-    # armed, leave it armed and keep re-injecting for salience - only a clear
-    # code pivot (above) or the retry cap (in writing-preset-lint) ends it.
+    # armed, leave it armed in its current mode and keep re-injecting for
+    # salience - only a clear code pivot (above) or the retry cap (in
+    # writing-preset-lint) ends it.
     if flag.exists():
-        context = build_context()
+        mode = read_flag_mode(flag)
+        context = build_context(mode)
         if context is not None:
             emit(context)
+
 
 if __name__ == "__main__":
     try:

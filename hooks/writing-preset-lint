@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Stop hook: three-tier linter for the human-writing preset (schema v2).
+"""Stop hook: writing-preset linter, dispatched by the session flag's mode.
 
-Tier 1: hard bans (regex, zero tolerance) - formatting only, incl. any em dash.
-Tier 2: statistical scoring - Poisson tail probabilities of tell-word counts vs
-        human baseline rates (lambda per 1000 words), combined with Stouffer's
-        method; plus tell clustering and sentence-length burstiness.
-Tier 3: semantic judge - headless `claude -p` (Haiku) evaluates intent/context
-        criteria regexes cannot see. Fail-open on any judge failure.
+mode "general" (default, unchanged): three-tier linter for the human-writing
+preset (schema v2).
+  Tier 1: hard bans (regex, zero tolerance) - formatting only, incl. any em dash.
+  Tier 2: statistical scoring - Poisson tail probabilities of tell-word counts vs
+          human baseline rates (lambda per 1000 words), combined with Stouffer's
+          method; plus tell clustering and sentence-length burstiness.
+  Tier 3: semantic judge - headless `claude -p` (Haiku) evaluates intent/context
+          criteria regexes cannot see. Fail-open on any judge failure.
+
+mode "ste100": deterministic ASD-STE100 checks instead - not-approved-word
+lookup against ste100-dictionary.json, sentence/paragraph length caps using
+STE100's own word-counting algorithm, the shared semicolon hard ban, and the
+same semantic-judge machinery with STE100 criteria (passive voice, banned verb
+constructions, WARNING/CAUTION structure, terminology consistency, ...).
 
 Runs only when writing-preset-inject armed this session. Blocks with a merged
-violation list from all tiers, capped at max_retries rewrites. A clean pass
-resets the retry counter but leaves the flag armed (writing-preset-inject owns
-arm/disarm across turns and keeps a thread armed until a clear code-shaped
-pivot) - the flag is only deleted here when the retry cap is hit, so a stuck
-thread can't loop forever. All failures exit 0 - a broken linter must never
-trap a session."""
+violation list, capped at max_retries rewrites. A clean pass resets the retry
+counter but leaves the flag armed (writing-preset-inject owns arm/disarm
+across turns and keeps a thread armed until a clear code-shaped pivot) - the
+flag is only deleted here when the retry cap is hit, so a stuck thread can't
+loop forever. All failures exit 0 - a broken linter must never trap a
+session."""
 
 import json
 import math
@@ -27,6 +35,8 @@ from statistics import NormalDist, mean, stdev
 
 WRITING_DIR = Path.home() / ".claude" / "writing"
 RULES_FILE = WRITING_DIR / "lint-rules.json"
+STE100_RULES_FILE = WRITING_DIR / "ste100-lint-rules.json"
+STE100_DICT_FILE = WRITING_DIR / "ste100-dictionary.json"
 
 
 def flag_path(session_id: str) -> Path:
@@ -38,15 +48,18 @@ def read_flag_state(flag: Path) -> dict:
     try:
         state = json.loads(flag.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
-        return {"retries": 0}
+        return {"retries": 0, "mode": "general"}
     if not isinstance(state, dict):
-        return {"retries": 0}
+        return {"retries": 0, "mode": "general"}
+    state.setdefault("mode", "general")
+    if state["mode"] not in ("general", "ste100"):
+        state["mode"] = "general"
     return state
 
 
-def write_flag_state(flag: Path, retries: int) -> None:
+def write_flag_state(flag: Path, retries: int, mode: str) -> None:
     try:
-        flag.write_text(json.dumps({"retries": retries}), encoding="utf-8")
+        flag.write_text(json.dumps({"retries": retries, "mode": mode}), encoding="utf-8")
     except OSError:
         pass
 
@@ -93,9 +106,9 @@ def compile_pattern(raw: str):
     return re.compile(raw, flags)
 
 
-# ---------- tier 1: hard bans ----------
+# ---------- shared: hard bans (used by both modes) ----------
 
-def tier1_violations(plain: str, rules: dict) -> list:
+def hard_ban_violations(plain: str, rules: dict) -> list:
     out = []
     for rule in rules.get("hard_bans", []):
         try:
@@ -107,6 +120,13 @@ def tier1_violations(plain: str, rules: dict) -> list:
             start = max(0, m.start() - 25)
             ctx = plain[start:m.end() + 25].replace("\n", " ")
             out.append(f'{rule["name"]} at "...{ctx}..."')
+    return out
+
+
+# ---------- general mode: tier 1 (hard bans + formatting) ----------
+
+def tier1_violations(plain: str, rules: dict) -> list:
+    out = hard_ban_violations(plain, rules)
 
     bold_spans = len(re.findall(r"\*\*[^*\n]+\*\*", plain))
     max_bold = rules.get("max_bold_spans", 3)
@@ -123,7 +143,7 @@ def tier1_violations(plain: str, rules: dict) -> list:
     return out
 
 
-# ---------- tier 2: statistics ----------
+# ---------- general mode: tier 2 (statistics) ----------
 
 def poisson_tail(k: int, mu: float) -> float:
     """P(X >= k) for X ~ Poisson(mu)."""
@@ -154,7 +174,6 @@ def tier2_violations(plain: str, rules: dict) -> list:
     # per-term Poisson surprise, combined via Stouffer
     z_cap = float(stats.get("per_term_z_cap", 8.0))
     zs, details, hits = [], [], []  # hits: (term, [word-index positions])
-    lower_words = [w.lower() for w in words]
 
     entries = list(rules.get("tell_words", []))
     for pat in rules.get("tell_patterns", []):
@@ -177,7 +196,6 @@ def tier2_violations(plain: str, rules: dict) -> list:
             positions = []
             if k:
                 word_starts = []
-                idx = 0
                 for wm in re.finditer(r"[A-Za-z']+", plain):
                     word_starts.append(wm.start())
                 for m in matches:
@@ -230,7 +248,152 @@ def tier2_violations(plain: str, rules: dict) -> list:
     return out
 
 
-# ---------- tier 3: semantic judge ----------
+# ---------- ste100 mode: dictionary lookup ----------
+
+def load_ste100_dictionary() -> dict:
+    """Returns {"not_approved": {word: [alternatives...]}, "approved": {word: pos-set}}."""
+    try:
+        entries = json.loads(STE100_DICT_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"not_approved": {}, "approved": {}}
+    if not isinstance(entries, list):
+        return {"not_approved": {}, "approved": {}}
+
+    approved_words = set()
+    not_approved = {}
+    self_tn_tv = set()  # words whose own not-approved entry lists themselves
+                         # back as a valid technical noun/verb (Rule 1.6/1.12
+                         # escape hatch) - e.g. "cover (v)" not approved, but
+                         # its alternatives include "cover (tn)"
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        word = (e.get("word") or "").strip().lower()
+        if not word:
+            continue
+        status = e.get("status")
+        if status == "approved":
+            approved_words.add(word)
+            for f in e.get("forms") or []:
+                approved_words.add(str(f).strip().lower())
+        elif status == "not_approved":
+            alts = [str(a) for a in (e.get("alternatives") or [])]
+            not_approved.setdefault(word, [])
+            for a in alts:
+                if a not in not_approved[word]:
+                    not_approved[word].append(a)
+                if re.match(rf"^{re.escape(word)}\s*\(", a) and re.search(r"\b(?:tn|tv)\b", a):
+                    self_tn_tv.add(word)
+
+    # Two reasons a not-approved word is unsafe to hard-flag with a
+    # POS-blind regex scan: (1) it's ALSO approved under some other part of
+    # speech, or (2) its own dictionary entry explicitly allows it back in
+    # as a technical noun/verb (a "cover (tn)"-style self-reference) - both
+    # cases mean the word the writer used might be the permitted sense, not
+    # the banned one, so leave it to the semantic judge instead.
+    safe_not_approved = {
+        w: alts for w, alts in not_approved.items()
+        if w not in approved_words and w not in self_tn_tv
+    }
+    return {"not_approved": safe_not_approved, "approved": approved_words}
+
+
+def ste100_dictionary_violations(plain: str, dictionary: dict) -> list:
+    not_approved = dictionary.get("not_approved", {})
+    if not not_approved:
+        return []
+    out = []
+    seen = set()
+    for m in re.finditer(r"[A-Za-z][A-Za-z'-]*", plain):
+        word = m.group(0).lower()
+        if word in seen or word not in not_approved:
+            continue
+        seen.add(word)
+        alts = not_approved[word]
+        suggestion = ", ".join(alts[:3]) if alts else "no listed alternative - reconstruct the sentence"
+        out.append(f'"{word}" is not an STE100-approved word - use {suggestion}')
+        if len(out) >= 15:
+            break
+    return out
+
+
+# ---------- ste100 mode: word-counting + sentence/paragraph length ----------
+
+def ste100_word_count(sentence: str, collapse_patterns: list) -> int:
+    s = sentence
+    for pat in collapse_patterns:
+        try:
+            rx = compile_pattern(pat["pattern"])
+        except (re.error, KeyError):
+            continue
+        s = rx.sub("X", s)
+    return len(re.findall(r"[A-Za-z0-9]+", s))
+
+
+PROCEDURAL_LEAD = re.compile(
+    r"^\s*(?:\(?\d{1,3}[.)]|\(?[a-zA-Z][.)]|[-*]\s|WARNING\s*:|CAUTION\s*:|NOTE\s*:)"
+)
+IMPERATIVE_LEAD = re.compile(
+    r"^\s*(?:do|make|remove|install|check|set|open|close|turn|apply|attach|connect|"
+    r"disconnect|adjust|replace|clean|inspect|tighten|loosen|torque|measure|record|"
+    r"continue|repeat|obey|use|put|get|lift|hold|release)\b",
+    re.IGNORECASE,
+)
+
+
+def split_sentences_with_context(plain: str) -> list:
+    """Returns list of (paragraph_index, sentence_text)."""
+    out = []
+    paragraphs = re.split(r"\n\s*\n", plain)
+    for pi, para in enumerate(paragraphs):
+        for line in para.split("\n"):
+            # a colon before a list has the same effect as a period (Rule 8.4)
+            for s in re.split(r"(?<=[.!?:])\s+", line.strip()):
+                s = s.strip()
+                if len(s.split()) >= 2:
+                    out.append((pi, s))
+    return out
+
+
+def ste100_sentence_violations(plain: str, rules: dict) -> list:
+    limits = rules.get("sentence_limits", {})
+    proc_max = int(limits.get("procedural_max_words", 20))
+    desc_max = int(limits.get("descriptive_max_words", 25))
+    collapse_patterns = rules.get("word_count_exceptions", {}).get("collapse_patterns", [])
+
+    out = []
+    for _, sentence in split_sentences_with_context(plain):
+        is_procedural = bool(PROCEDURAL_LEAD.match(sentence) or IMPERATIVE_LEAD.match(sentence))
+        cap = proc_max if is_procedural else desc_max
+        n = ste100_word_count(sentence, collapse_patterns)
+        if n > cap:
+            kind = "procedural (20-word)" if is_procedural else "descriptive (25-word)"
+            snippet = sentence[:80] + ("..." if len(sentence) > 80 else "")
+            out.append(f"sentence exceeds the {kind} cap: {n} words in \"{snippet}\"")
+        if len(out) >= 8:
+            break
+    return out
+
+
+def ste100_paragraph_violations(plain: str, rules: dict) -> list:
+    max_sentences = int(rules.get("paragraph_limits", {}).get("descriptive_max_sentences", 6))
+    out = []
+    paragraphs = re.split(r"\n\s*\n", plain)
+    for para in paragraphs:
+        if PROCEDURAL_LEAD.search(para) or IMPERATIVE_LEAD.match(para.strip()):
+            continue  # numbered/lettered work-step lists aren't paragraph-capped
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", para.strip()) if len(s.split()) >= 2]
+        if len(sentences) > max_sentences:
+            out.append(
+                f"paragraph has {len(sentences)} sentences (max {max_sentences}): "
+                f"\"{para.strip()[:60]}...\""
+            )
+        if len(out) >= 5:
+            break
+    return out
+
+
+# ---------- semantic judge (shared by both modes, different criteria) ----------
 
 def extract_json_object(s: str):
     s = re.sub(r"```(?:json)?", "", s)
@@ -262,8 +425,8 @@ def tier3_violations(text: str, rules: dict):
     criteria = "\n".join(f"- {c}" for c in cfg.get("criteria", []))
     prompt = (
         "You are a strict writing linter. Judge whether TEXT contains any of these "
-        "AI-writing violations. Only flag clear violations with an exact quote; "
-        "borderline or defensible phrasing passes.\n\nCriteria:\n" + criteria +
+        "violations. Only flag clear violations with an exact quote; borderline or "
+        "defensible phrasing passes.\n\nCriteria:\n" + criteria +
         '\n\nRespond with ONLY a JSON object, no prose: '
         '{"pass": true|false, "violations": [{"rule": str, "quote": str, "why": str}]}'
         "\n\nTEXT:\n" + text[:12000]
@@ -307,14 +470,17 @@ def main() -> None:
     if not flag.exists():
         return
 
+    state = read_flag_state(flag)
+    mode = state.get("mode", "general")
+    retries = int(state.get("retries", 0))
+
+    rules_file = STE100_RULES_FILE if mode == "ste100" else RULES_FILE
     try:
-        rules = json.loads(RULES_FILE.read_text(encoding="utf-8"))
+        rules = json.loads(rules_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         flag.unlink(missing_ok=True)
         return
 
-    state = read_flag_state(flag)
-    retries = int(state.get("retries", 0))
     max_retries = int(rules.get("max_retries", 2))
 
     text = last_assistant_text(data.get("transcript_path", "") or "")
@@ -323,9 +489,20 @@ def main() -> None:
         return
     plain = strip_code(text)
 
+    def compute_violations():
+        if mode == "ste100":
+            dictionary = load_ste100_dictionary()
+            v = (hard_ban_violations(plain, rules)
+                 + ste100_dictionary_violations(plain, dictionary)
+                 + ste100_sentence_violations(plain, rules)
+                 + ste100_paragraph_violations(plain, rules))
+        else:
+            v = tier1_violations(plain, rules) + tier2_violations(plain, rules)
+        return v
+
     if retries >= max_retries:
-        # cap hit: release, but fail loud about anything still wrong (tiers 1-2 only)
-        remaining = tier1_violations(plain, rules) + tier2_violations(plain, rules)
+        # cap hit: release, but fail loud about anything still wrong (mechanical checks only)
+        remaining = compute_violations()
         flag.unlink(missing_ok=True)
         if remaining:
             print(json.dumps({"systemMessage":
@@ -333,7 +510,7 @@ def main() -> None:
                 + "; ".join(remaining[:6])}))
         return
 
-    violations = tier1_violations(plain, rules) + tier2_violations(plain, rules)
+    violations = compute_violations()
     judge_violations, judge_ran = tier3_violations(text, rules)
     violations += judge_violations
 
@@ -341,25 +518,31 @@ def main() -> None:
         # clean pass: reset the retry counter but leave the flag armed, so a
         # later ambiguous follow-up turn still gets linted without needing
         # its own vocabulary match (writing-preset-inject owns disarming)
-        write_flag_state(flag, retries=0)
+        write_flag_state(flag, retries=0, mode=mode)
         if rules.get("semantic_judge", {}).get("enabled") and not judge_ran:
             print(json.dumps({"systemMessage":
                 "writing-preset-lint: passed on mechanical checks; semantic judge was skipped (unavailable)"}))
         return
 
-    write_flag_state(flag, retries=retries + 1)
+    write_flag_state(flag, retries=retries + 1, mode=mode)
 
     listed = "; ".join(violations[:12])
     if len(violations) > 12:
         listed += f"; and {len(violations) - 12} more"
+    ruleset_name = "ASD-STE100" if mode == "ste100" else "human-writing preset"
+    absolutes = (
+        "zero semicolons, correct approved-word substitutions with the exact alternatives given"
+        if mode == "ste100" else
+        "zero em dashes, zero emoji, no bold-term bullets"
+    )
     print(json.dumps({
         "decision": "block",
         "reason": (
-            "Your reply violates the human-writing preset. Linter findings: "
+            f"Your reply violates the {ruleset_name}. Linter findings: "
             f"{listed}. Rewrite the reply fixing exactly these issues while keeping the "
-            "content. Absolute rules: zero em dashes, zero emoji, no bold-term bullets. "
-            "For vocabulary findings, do not just delete the flagged words; rephrase in "
-            "plain human English and vary your sentence lengths."
+            f"content. Absolute rules: {absolutes}. For vocabulary findings, do not just "
+            "delete the flagged words; rephrase in plain, approved language and keep the "
+            "meaning intact."
         ),
     }))
 

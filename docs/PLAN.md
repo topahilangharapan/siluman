@@ -56,3 +56,12 @@ Design principle: **inject deterministically, then verify deterministically.** T
 2. Unit-test the gate: run `writing-preset-inject` with prompts "write a blog post about coffee", "tuliskan email untuk dosen", "write a function that parses JSON" (must NOT trigger), "#hw fix this paragraph".
 3. Live test in a fresh `claude` session: a writing prompt (confirm injected context + a deliberately provoked rewrite by asking it to use the word "delve"), then a coding prompt (confirm no injection, no lint).
 4. Confirm the retry cap by making the linter temporarily impossible to satisfy and watching it release after 2 blocks.
+
+## Follow-up: ASD-STE100 mode (2026-09-03)
+
+This document describes the original, AISIGNS-only design. A second, independent writing mode was
+added afterward: ASD-STE100 Simplified Technical English, gated separately for technical/procedural
+writing prompts (manuals, SOPs, work instructions) and enforced by its own preset, dictionary, and
+lint-rules file rather than layered onto the design above. See the plan at
+`~/.claude/plans/replicated-sprouting-flame.md` (or the README's "STE100 mode" section) for that
+design; this file is left as-is as the historical record of the original harness.
