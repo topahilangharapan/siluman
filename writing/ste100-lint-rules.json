@@ -1,0 +1,47 @@
+{
+  "_comment": "STE100 mode rules for ~/.claude/hooks/writing-preset-lint. Deterministic (not statistical, unlike the general lint-rules.json): every check here is a binary pass/fail per ASD-STE100 Issue 9 (2025-01-15). The not-approved/approved word lookup itself lives in ste100-dictionary.json, read separately by the hook. hard_bans use the same regex-with-optional-inline-flags format as lint-rules.json.",
+  "max_retries": 2,
+  "hard_bans": [
+    {
+      "name": "semicolon (STE100 Rule 8.1, never permitted)",
+      "pattern": ";"
+    }
+  ],
+  "sentence_limits": {
+    "_comment": "Rule 5.1 (procedural), Rule 6.3 (descriptive), Rule 5.5 (notes). A sentence is classified procedural if it's inside a numbered/lettered work-step list or starts with an imperative verb; otherwise descriptive. When classification is ambiguous the linter uses the looser (descriptive) cap to avoid false positives.",
+    "procedural_max_words": 20,
+    "descriptive_max_words": 25,
+    "note_max_words": 25
+  },
+  "paragraph_limits": {
+    "_comment": "Rule 6.6, descriptive writing only.",
+    "descriptive_max_sentences": 6
+  },
+  "word_count_exceptions": {
+    "_comment": "Rule 8.4-8.7 word-counting algorithm. Each pattern's matches are collapsed to a single counted token BEFORE splitting the sentence into words, applied in this order so longer/more-specific spans (parentheses, quotes) are protected before the narrower numeric/hyphen patterns run inside what's left outside them.",
+    "collapse_patterns": [
+      {"name": "parenthetical_span", "pattern": "\\([^()]*\\)"},
+      {"name": "quoted_text", "pattern": "\"[^\"]*\""},
+      {"name": "number_with_unit", "pattern": "\\b\\d+(?:[.,]\\d+)?\\s?(?:°[CF]?|kg|g|mg|mm|cm|km|m\\b|psi|kPa|MPa|Pa|Nm|N|lbf|Ω|ohms?|ohm|L\\b|ml|mL|A\\b|mA|V\\b|kV|W\\b|kW|Hz|kHz|lb|lbs|in\\b|ft\\b|yd|gal|qt|sec|min|hr|°)\\b"},
+      {"name": "alphanumeric_identifier", "pattern": "\\b(?=[A-Za-z0-9-]*\\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\\b"},
+      {"name": "hyphenated_compound", "pattern": "\\b[A-Za-z]+(?:-[A-Za-z]+)+\\b"}
+    ]
+  },
+  "semantic_judge": {
+    "enabled": true,
+    "model": "claude-haiku-4-5-20251001",
+    "timeout_seconds": 45,
+    "criteria": [
+      "Passive voice used in procedural (instructional) text, or used in descriptive text where the agent is actually known or stated elsewhere - STE100 requires active voice except when the agent is genuinely unknown",
+      "An auxiliary-verb construction that isn't infinitive/imperative/simple present/simple past/simple future/past-participle-as-adjective (e.g. 'has installed', 'is being tested', 'can be adjusted', 'is to be removed') left un-rewritten",
+      "The '-ing' form used as a present-tense verb, a stand-alone adjective, or the head of a noun phrase with its own object, instead of only as a technical noun or a modifier inside a technical noun",
+      "A WARNING or CAUTION with the wrong risk level (injury/death mislabeled CAUTION, or a pure equipment-damage risk labeled WARNING), missing a leading command/condition, or missing a stated risk/consequence",
+      "More than one instruction packed into a single procedural sentence when the actions are not simultaneous and no result immediately follows its action",
+      "The same real-world item or concept referred to by two or more different technical nouns across the text (synonym rotation), instead of one consistent term",
+      "A multi-word noun longer than three words that was not shortened, hyphenated, or explained on first use",
+      "An invented phrasal verb (two approved words combined into a new, unapproved compound meaning) instead of the single approved verb that already covers it",
+      "A contraction, an omitted article, or an omitted 'that' after verbs like 'make sure'/'recommend' where its absence creates ambiguity",
+      "A gendered pronoun ('he'/'she') or a Latin abbreviation ('e.g.', 'i.e.', 'etc.') left unreplaced"
+    ]
+  }
+}
