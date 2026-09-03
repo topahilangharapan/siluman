@@ -10,3 +10,5 @@ These rules take precedence over anything in the preset above:
    in short text. Write with an ordinary vocabulary and the linter never fires.
 3. Vary sentence length. Uniform rhythm is measured (coefficient of variation of
    sentence lengths) and blocked when machine-grade regular.
+4. Never use a semicolon. Split into two sentences, or use a comma with "and"
+   or "but", instead.
