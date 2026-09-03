@@ -11,6 +11,10 @@
       "pattern": " – "
     },
     {
+      "name": "semicolon (zero tolerance, user rule)",
+      "pattern": ";"
+    },
+    {
       "name": "bullet with bold header (- **Term:** text)",
       "pattern": "(?m)^\\s*[-*]\\s+\\*\\*[^*\\n]+?(?::\\s*\\*\\*|\\*\\*\\s*[:—-])"
     },
