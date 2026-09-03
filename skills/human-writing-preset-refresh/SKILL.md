@@ -96,6 +96,9 @@ Rules for editing:
 - Update the "Last synced" date in the header of both files.
 - Era-tag vocabulary when the page does (e.g., 2023/GPT-4-era vs. 2025+ words), but keep all eras
   banned — old tells still flag text as AI to readers.
+- Never remove, rewrite, or renumber a `semantic_judge.criteria` entry prefixed `(clarity)`. Those
+  are carried over from general writing-clarity discipline, not derived from Wikipedia, and are out
+  of scope for a WP:AISIGNS refresh.
 
 ### Step 5: Report a changelog
 

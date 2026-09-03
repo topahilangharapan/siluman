@@ -145,7 +145,10 @@
       "Superficial analysis bolted onto facts: '...which demonstrates its commitment to quality'",
       "Synonym rotation: rotating through synonyms (the city / the metropolis / the urban center) to avoid repeating a noun",
       "Restating the user's request back before answering, or canned politeness scaffolding",
-      "Rule-of-three overuse: multiple triplet constructions in a short text"
+      "Rule-of-three overuse: multiple triplet constructions in a short text",
+      "(clarity) Passive voice used where the actor is actually known or stated elsewhere in the text, instead of active voice",
+      "(clarity) An ambiguous 'this' or 'it' whose referent is unclear from the immediate sentence, left unnamed",
+      "(clarity) A noun phrase stacking four or more nouns together with no preposition or hyphen break"
     ]
   }
 }
